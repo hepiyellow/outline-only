@@ -33,20 +33,76 @@ A skill that tells an agent how this user wants to work with an outline: when to
 _Avoid_: Template (a template is a workflow skill the plugin suggests), settings, preferences
 
 **Title**:
-The name of an outline session. The user gives it as the topic when starting the outline session, or on the page afterwards; else the agent gives it once the work has a subject. Until then the outline is **untitled**: it has no title of its own, and the page shows the placeholder "Untitled" with the field that names it. The user can rename it from the page at any time. A title the user gives on the page is also given to the linked session, as that session's own name.
+The name of an outline session. The user gives it as the subject when starting the outline session, or on the page afterwards; else the agent gives it once the work has a subject. Until then the outline is **untitled**: it has no title of its own, and the page shows the placeholder "Untitled" with the field that names it. The user can rename it from the page at any time. A title the user gives on the page is also given to the linked session, as that session's own name.
 _Avoid_: Name, heading (a heading is a node)
 
 **Node**:
-A numbered heading in an outline, together with its text (everything under it up to the next heading); nodes nest at most six levels deep.
+A numbered heading in an outline, together with its text (everything under it up to the next heading); nodes nest at most ten levels deep.
 _Avoid_: Bullet, item, row, point
 
 **Topic**:
-A top-level node.
-_Avoid_: Section, point
+A unit of work in an outline with a lifecycle of its own. Every outline has at least one; while it has only one, the page does not show it, and the nodes in its stages read as the outline's top level. A topic's children are its stages; a stage holds its nodes and any topics placed inside it, as a Discussion holds the decisions its subtopics share beside the subtopics themselves. The outline's top level holds topics. A topic is not a kind of node: topics and stages are the outline's structure, and the nodes that have kinds sit in stages.
+_Avoid_: Scope (the same thing), container (a topic holds topics only inside its stages), section, point, project (that is where an outline is filed), workstream, subtask
 
 **Bullet**:
 A plain list item inside a node's text; it has no number, no kind and no approval.
 _Avoid_: Node, item
+
+**Lifecycle**:
+The one chain of stages every topic can go through, whatever the kind of work: Discussion, Plan, Implementation, Verification, Preservation, in that order, each turned on or off for that topic. What a stage holds in one kind of work (tests or a review, a commit or a published document) is for the workflow skill to say. A topic has at least one stage on. One nobody chose stages for has Discussion alone; one whose deciding happened outside the outline (a plan the user hands over to carry out) has Discussion off. The outline names the stages a new topic starts with. They can change at any time: the agent may turn a stage on, and only the user turns one off, on the page or by telling the agent, which counts as the user's own act; the agent then adapts the topic to it.
+_Avoid_: Workflow (that is the workflow skill: how the user wants to work, not what the work goes through), state machine, process
+
+**Stage**:
+One link of a lifecycle, such as Discussion or Plan. A topic's stages that are on come in the lifecycle's order, each at most once. A stage's number under its topic is its place in the lifecycle, Discussion first and Preservation fifth, whether the stages before it are on or not. Discussion and Plan never hold a task; only Plan holds plan items. Stages never go backwards: a topic placed inside a stage starts at that stage or a later one. So what a later stage finds about an earlier one (a question met while implementing) goes up to the earlier stage, as a ripple, and is not a new topic below. A stage turned off keeps its nodes, folded away, and asks nothing of the user; turned on again, it is as it was. A stage that is on is **not started** until it holds a node (the page shows the first such as the next stage, dimmed), then **active**, then **done**: Implementation, Verification and Preservation are done once every task in them is; Discussion and Plan once the agent says so, which it cannot while Discussion holds an unresolved question. A stage with a node a ripple reached **needs review**, whatever else it is. The user can reopen a done stage, and a node added to one reopens it.
+_Avoid_: Step, phase, status
+
+**Preset**:
+A named set of stages to start a topic with, such as coding (every stage) or strategy (no Implementation or Verification). A topic keeps the stages that are on, not the preset's name, so changing a stage never makes the name wrong. Presets are written in the workflow skill, for the agent to pick from; the server knows none, and on the page the user turns stages on and off one at a time.
+_Avoid_: Lifecycle (there is one), template, profile
+
+**Link**:
+A node's record of a node it comes from: a plan item of the decisions it carries out, a task of its plan item, a check of its task, a decision of the question it answers. A link always points upstream, to an earlier stage or the same one, and never closes a loop, so following links back or forward always ends. It may point into another topic.
+_Avoid_: Reference (that is a node's number written in text), dependency, relation
+
+**Check**:
+A task in a Verification stage, linked to the task it checks: running the tests, looking at the page. A check that fails is a failed task, run again like any other, and what it undermines is reached through its links.
+_Avoid_: Test (that is one way to check), verification (that is the stage)
+
+**Plan item**:
+A node in a Plan stage that says what will be done. It has no Run button: with Implementation on, the agent carries it out as tasks linked to it; with Implementation off, the user carries it out.
+_Avoid_: Task (that is the doing of it), step, plan step
+
+**Dependency**:
+A topic's waiting for another: it cannot go on until that one is done. The agent sets one at any time, and a link from a topic's node into another topic is one by itself. Dependencies never form a loop. The page shows them as a badge on the topic ("waits for 1, 2") and never reorders topics for them; a topic with none can go on beside the others.
+_Avoid_: Link (that is between nodes), blocker, prerequisite
+
+**Split**:
+Moving part of a topic into a sibling topic of its own, once that part can be done and verified on its own. Its nodes move with their links; its Discussion is off when the deciding happened in the topic it came from, and its plan items keep their links to the decisions there. The agent splits without asking; the user may merge back.
+_Avoid_: Extract, fork, spin off
+
+**Merge**:
+Two topics made one: their nodes combined stage by stage, each keeping its links. Numbers change; nothing is lost.
+_Avoid_: Join, combine
+
+**Topic notes**:
+A project's notes on how the user wants work divided into topics. The agent adds a line each time the user merges topics it split or rejects a split, reads them before making topics, and the user edits them as they like.
+_Avoid_: Rules file, memory, workflow skill (that is how the user wants to work, and the agent never writes it)
+
+**Topic layout**:
+How the page lays out one topic's nodes, as the user chooses: **by stage**, as they are kept (each stage's nodes under it), or **by plan item**, each plan item with the tasks that carry it out under it and the checks of those tasks under them, drawn from the links. A node has the same number in both. What is a topic of its own is the agent's to decide; how a topic's nodes are laid out is not.
+_Avoid_: View (that is table or bubbles), shape, nesting
+
+**Ripple**:
+What a change to a node does to the nodes that come from it, through link after link: a decision reworded or reopened reaches the plan items built on it, their tasks and those tasks' checks. A node a ripple reached **needs review**, and so does its stage; a collapsed stage it reaches opens. Where the ripple needs the user, it is a pending action already (the decision upstream reopened as a question, a task to run again); the rest is never put in the action queue. The agent clears each mark, by changing the node, which reaches the user as a pending change, or by saying it still holds.
+_Avoid_: Cascade, impact, stale (as a noun)
+
+**Trace**:
+The nodes linked to one node, back and forward: every node it comes from, through link after link, and every node that comes from it. One node may come from several (a task from a usability decision and a pricing one) and lead to several, so a trace branches both ways. It holds only what led to the node and what was built on it, never their other branches, and it is how a ripple is followed: forward from what changed, back from what broke.
+_Avoid_: Chain, lineage, provenance, history (that is a node's own past wording and the user's actions on it)
+
+**Overview**:
+The panel a node's overview button opens at the side of the outline: that node's trace laid out in one band per stage from the top down, each linked node a box in its stage's band, the clicked node marked in its own, and lines for the links. Each box says the topic it sits in; a band with many boxes shows their count until opened.
+_Avoid_: Details, inspector, history
 
 **Kind**:
 What a node is on the agent's side: plain (the agent takes no stance), an **agent claim**, or claim for short (the agent states it as settled or certain), an unresolved question, an option, or a task (proposed, done or failed). A question with a recommended option is a claim. The page shows a node's kind as its **kind mark**. A task's kind mark is a checkbox, ticked once the agent has done the task: that tick is the agent's word that the task is done, and never an approval, which a task does not take. A node has one kind: it is never a claim and a task at once, and the task that follows from a claim is a node of its own beside it. A parent other than a question has no kind of its own: the kinds found under it show beside it. On every row the kind marks are at the right of the title, and none stands at its left: a node's own kind, when it has one, and on a parent also the kinds found under it, each with how many nodes under the parent have it. They are drawn in one column for each kind, in a fixed order, the same for every row in view (a row is in view when every parent above it is open), and a column exists only for a kind that some row in view shows. A claim the user approved is a kind of its own in this.
@@ -57,12 +113,16 @@ The user's own mark on a node, shown by the tick in its box. It is the only tick
 _Avoid_: Status, checkbox, resolved, agent-approved, done, and a bare "approved" (it does not say who approved), pending human approval (the human has approved; the agent has not recorded it)
 
 **Action log**:
-The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
+The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, turned it off (a stage), each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
 _Avoid_: Approval log (it holds picks and runs too), audit log, undo history (undo is the viewer state's steps)
 
 **Question**:
 A node that asks the user to choose exactly one of the options under it. When the agent recommends one of them it is a claim, a fuller one that also shows what the agent chose not to claim, and it waits for the user like any other claim. Without a recommendation it is an **unresolved question**: the agent cannot decide, or leaves the decision to the user, and it is the one kind of node that needs the user. Something the agent asks and answers itself, with no options to show (a yes or no), is not a question but a claim, however it is phrased.
-_Avoid_: Choice, poll, decision (a decide item is a queue item)
+_Avoid_: Choice, poll, decision (that is what answers it: the option picked)
+
+**Decision**:
+What a Discussion stage settled, as a node: a claim there, approved or not, or the option the user picked of a question there. Plan items link to the decisions they come from: to the claim or the picked option, never to the question. Like every node it is referred to by its number, with no numbering of its own.
+_Avoid_: Resolution, ruling, D-number
 
 **Option**:
 A child node of a question, shown with a letter; the agent may recommend one, and the user picks one, which answers the question. The user picks it with the **pick button**, which stands first in the option's text with a line that says what a click does; nothing left of a title picks an option. Once picked, the button says so and a click takes the pick back, picking another option moves the pick, and the option's row shows the user's tick at its right.
@@ -120,11 +180,11 @@ The agent's stored log of a session's messages and tool calls.
 _Avoid_: History, log
 
 **Action**:
-Something the user does on a node of the outline: approve it, pick an option, run a task, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
+Something the user does on a node of the outline: approve it, pick an option, run a task, turn a stage off, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
 _Avoid_: Task (that is the agent's), and "action" for anything the agent does
 
 **Task**:
-Something for the agent to do in the session itself (run tests, change code), kept as a node. The agent proposes it and carries it out only when the user runs it, or the user asks for it in chat and the agent carries it out at once. Once the agent has carried it out it is a **done** task, or a **failed** one when the agent tried and could not; a failed task can be run again. A task takes no approval.
+Something for the agent to do in the session itself (run tests, change code), kept as a node in a stage where something is done: Implementation, where it links to the plan item it carries out, Verification (a check) or Preservation. Discussion and Plan never hold one: they decide and plan. The agent proposes it and carries it out only when the user runs it, or the user asks for it in chat and the agent carries it out at once. Once the agent has carried it out it is a **done** task, or a **failed** one when the agent tried and could not; a failed task can be run again. A task takes no approval.
 _Avoid_: Action (that is the user's), play task, step, job
 
 **Pending action**:
