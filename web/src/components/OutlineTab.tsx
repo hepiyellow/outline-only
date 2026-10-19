@@ -3,8 +3,11 @@ import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
 import { cn } from '@/lib/utils'
-import type { Outline, OutlineNode, ViewerState } from '@/types'
+import type { Outline, OutlineNode, StageInfo, StageName, ViewerState } from '@/types'
+import { api, outlineApiPath } from '@/lib/api'
+import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
 import { NodeHistory } from './NodeHistory'
+import { useNotify } from './Notice'
 import { OutlineCtx, RemovedRow, Topic, isRemoved, withRemoved, type OutlineContext } from './NodeView'
 import { waiting } from './queue'
 import { RenameTitle } from './RenameTitle'
@@ -18,7 +21,10 @@ const SETTLE_PAUSE = 700
 /** How long the kind marks that changed as a change was opened are drawn pulsing, a little over one grow and shrink. */
 const PULSE_MS = 700
 
-export const isOpenIn = (open: OpenNodes, statuses: Statuses) => (node: OutlineNode) => (node.num in open ? open[node.num] : statuses.startsOpen(node))
+export const isOpenIn =
+    (open: OpenNodes, statuses: Statuses, stages: Record<string, StageInfo> = {}) =>
+    (node: OutlineNode) =>
+        node.num in open ? open[node.num] : (lifecycleStartsOpen(node, stages) ?? statuses.startsOpen(node))
 
 /** Whether a node has nothing left to show: a parent that is settled, or a task the agent carried out and did not fail. */
 const finished = (node: OutlineNode, statuses: Statuses) => (node.children.length ? statuses.isSettled(node) : statuses.ran(node) && !node.tags.includes('failed'))
@@ -84,12 +90,23 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
     const unopened = useMemo(() => new Set(actions.pending.keys()), [actions.pending])
     // The kind marks that changed as a change was accepted.
     const [pulse, setPulse] = useState<Map<string, MarksChange>>(new Map())
+    const notify = useNotify()
+    const lifecycle = outline.lifecycle ?? { topics: {}, stages: {} }
+    const act = useMemo(() => {
+        const post = (body: unknown) => api(`/api/outline/${outlineApiPath(outline.project, outline.file)}/act`, body).catch((e: Error) => notify(e.message, true))
+        return {
+            onStage: (topic: string, name: StageName, on: boolean) => void post({ stage: { topic, name, on } }),
+            onReopen: (stage: string) => void post({ reopen: stage }),
+        }
+    }, [outline.project, outline.file, notify])
     const ctx = useMemo<OutlineContext>(() => {
         // The marks are those of the outline as it is shown: a node whose change waits keeps the kind it was read with.
         const statuses = new Statuses(shown, viewer.overrides, outline.mode, new Set(outline.unacked), unopened)
-        const isOpen = isOpenIn(viewer.open, statuses)
+        const isOpen = isOpenIn(viewer.open, statuses, lifecycle.stages)
         return {
             ...actions,
+            ...act,
+            lifecycle,
             onHistory: setHistoryOf,
             statuses,
             // The first item about a node, as the queue column lists them.
@@ -107,7 +124,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
             runs: viewer.runs,
             links: linksByNum(outline.nodes),
         }
-    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle])
+    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle, act, lifecycle])
 
     // Accepting a change turns the marks it held back: each one that differs from before grows and shrinks once. What
     // it was is the outline as it was shown with the change not accepted, so only the click makes a difference.
@@ -209,7 +226,11 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
                         {EMPTY[!actions.linked ? 'unlinked' : outline.mode === 'server' && !outline.session ? 'starting' : 'linked']}
                     </p>
                 )}
-                {withRemoved(shown, actions.removedIn('')).map(n => (isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} topic /> : <Topic key={n.num} node={n} />))}
+                {hasTopics(shown) ? (
+                    <LifecycleView nodes={shown} removed={actions.removedIn('')} />
+                ) : (
+                    withRemoved(shown, actions.removedIn('')).map(n => (isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} topic /> : <Topic key={n.num} node={n} />))
+                )}
             </div>
         </OutlineCtx.Provider>
     )

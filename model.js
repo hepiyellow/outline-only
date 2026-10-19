@@ -1347,6 +1347,34 @@ function leavesToApprove(node, out = []) {
 }
 
 /**
+ * The user turned a stage of a topic on or off on the page (`{ topic, name, on }`). A stage turned off keeps its
+ * nodes, folded away, and asks nothing; a topic always has a stage on. Returns the action log's entry, or undefined
+ * when the stage already was so.
+ */
+export function userStage(model, { topic: num, name, on } = {}) {
+    const found = indexOf(model).get(num)
+    if (!found?.node.topic) throw new OpError(`${num} is not a topic`)
+    if (!STAGES.includes(name) || typeof on !== 'boolean') throw new OpError('a stage is { topic, name, on }')
+    const topic = found.node
+    if (topic.stages.includes(name) === on) return undefined
+    if (!on && topic.stages.length === 1) throw new OpError(`${STAGE_NAME[name]} is the only stage on, and a topic always has one: turn another on first`)
+    const holder = placeOf(model, topic.num).stage
+    if (on && holder && stageIndex(name) < stageIndex(holder.stage)) throw new OpError(`${topic.num} sits inside ${STAGE_NAME[holder.stage]}, so it has no ${STAGE_NAME[name]}`)
+    topic.stages = on ? [...topic.stages, name].sort((a, b) => stageIndex(a) - stageIndex(b)) : topic.stages.filter(s => s !== name)
+    fitStages(topic)
+    return { ...userEntry(model, topic.num, on ? 'turned-on' : 'turned-off'), stage: name }
+}
+
+/** The user reopened a Discussion or a Plan the agent had closed. Returns the action log's entry. */
+export function userReopen(model, num) {
+    const found = indexOf(model).get(num)
+    if (!found?.node.stage) throw new OpError(`${num} is not a stage`)
+    if (!found.node.stageDone) throw new OpError(`${num} is not closed: Implementation, Verification and Preservation are done by their tasks`)
+    found.node.stageDone = false
+    return { ...userEntry(model, num, 'reopened'), stage: found.node.stage }
+}
+
+/**
  * Applies what the user did on the page: `set` is a list of `{ num, approved }`, one per node whose tick changed.
  * Returns the events the agent is told about: `{ kind: 'approved' | 'picked' | 'reopened', num, title }`.
  */

@@ -6,11 +6,12 @@ import type { Statuses } from '@/lib/status'
 import { DONE_PILL, FAILED_PILL, contentHtml, liveHtml, type NodeContent } from '@/lib/content'
 import { allNodes, type NodeLinks } from '@/lib/outline'
 import type { Box, KindKey, MarksChange } from '@/lib/status'
-import type { Message, OutlineNode, QueueItem, RemovedNode } from '@/types'
+import type { Lifecycle, Message, OutlineNode, QueueItem, RemovedNode, StageName } from '@/types'
 import { NodeMessages } from './Inbox'
 import { useNotify } from './Notice'
 import type { PendingChange } from '@/lib/pending'
 import { DIFF_ICON, MINUS_ICON, PLUS_ICON } from './queue'
+import { StageSection, TopicSection } from './Lifecycle'
 import { Marks, StatusBox, Tick, type OwnRole } from './StatusBox'
 
 /** What every node of the Outline tab needs: statuses, which nodes are open, the current path, and the user's actions. */
@@ -77,11 +78,17 @@ export interface OutlineContext {
     pulse: Map<string, MarksChange>
     /** Node number → its links by the numbers the nodes have now (server mode). */
     links: Map<string, NodeLinks>
+    /** Server mode: the outline's topics and stages, with where each stage stands. */
+    lifecycle: Lifecycle
+    /** The user turns a stage of a topic on or off. */
+    onStage: (topic: string, name: StageName, on: boolean) => void
+    /** The user reopens a Discussion or a Plan the agent closed. */
+    onReopen: (stage: string) => void
 }
 
 export const OutlineCtx = createContext<OutlineContext | null>(null)
 
-const useOutlineCtx = () => {
+export const useOutlineCtx = () => {
     const ctx = useContext(OutlineCtx)
     if (!ctx) throw new Error('OutlineCtx missing')
     return ctx
@@ -322,7 +329,7 @@ function RemoveButton({ node }: { node: OutlineNode }) {
 }
 
 /** A parent's buttons on hover: the reference, the markdown copy, the history, the trash, and the diff of everything changed under it. */
-function Asks({ node }: { node: OutlineNode }) {
+export function Asks({ node }: { node: OutlineNode }) {
     const { unreadUnder, onOpenChange } = useOutlineCtx()
     const under = unreadUnder(node.num).length
     return (
@@ -356,7 +363,7 @@ function Asks({ node }: { node: OutlineNode }) {
  * nothing else on screen would say; an open one leaves that to its nodes. A click opens the diff of the node's change
  * and of every change under it; on a node whose diff is open, it hides the diff again.
  */
-function Diff({ node }: { node: OutlineNode }) {
+export function Diff({ node }: { node: OutlineNode }) {
     const { pending, reviewing, unreadUnder, removedUnder, isOpen, onOpenChange, onHide } = useOutlineCtx()
     const own = pending.get(node.num)
     const shown = !!own && reviewing.has(node.num)
@@ -408,7 +415,7 @@ const KIND_NAME: Record<KindKey, string> = {
  * or added), and the button that accepts it. On the node whose diff button opened the view, it also accepts every
  * change under it at once, and hides the diff.
  */
-function DiffBar({ node }: { node: OutlineNode }) {
+export function DiffBar({ node }: { node: OutlineNode }) {
     const { pending, reviewing, roots, diffsAt, kindChangeOf, onAccept, onHide } = useOutlineCtx()
     const own = reviewing.has(node.num) ? pending.get(node.num) : undefined
     const root = roots.has(node.num)
@@ -467,7 +474,7 @@ const useDiffMark = (node: OutlineNode) => {
  * text that does. A parent's bubbles show the first node under it of their kind, and then what there is to act on: an
  * action's button, or that node's own icon.
  */
-function RowMarks({ node, box }: { node: OutlineNode; box: Box }) {
+export function RowMarks({ node, box }: { node: OutlineNode; box: Box }) {
     const { runs, onReveal, kindColumns, pulse, statuses, isOpen, toggle } = useOutlineCtx()
     const leaf = !node.children.length
     const option = statuses.isOption(node)
@@ -548,7 +555,7 @@ function LinkChips({ node }: { node: OutlineNode }) {
 }
 
 /** A node's envelope, when the agent has messages about it. */
-function Messages({ node }: { node: OutlineNode }) {
+export function Messages({ node }: { node: OutlineNode }) {
     const { messagesFor, seen, onSeen, onReveal } = useOutlineCtx()
     return <NodeMessages num={node.num} messages={messagesFor(node.num)} seen={seen} onSeen={onSeen} onReveal={onReveal} />
 }
@@ -595,7 +602,17 @@ export function NodeList({ nodes, under }: { nodes: OutlineNode[]; under: string
         <div className="nodes">
             {withRemoved(nodes, removedIn(under)).map(n =>
                 // A node whose only nodes were taken out is still drawn as a parent: their rows stand under it.
-                isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} /> : n.children.length || removedIn(n.num).length ? <Group key={n.num} node={n} /> : <Leaf key={n.num} node={n} />,
+                isRemoved(n) ? (
+                    <RemovedRow key={`removed:${n.id}`} node={n} />
+                ) : n.tags.includes('topic') ? (
+                    <TopicSection key={n.num} node={n} />
+                ) : n.stage ? (
+                    <StageSection key={n.num} node={n} />
+                ) : n.children.length || removedIn(n.num).length ? (
+                    <Group key={n.num} node={n} />
+                ) : (
+                    <Leaf key={n.num} node={n} />
+                ),
             )}
         </div>
     )

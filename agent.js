@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WORKFLOW_NAME, extractHeaders, renderPlain } from './outline.js'
-import { OpError, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, serializeOutline, userEntry } from './model.js'
+import { OpError, STAGE_NAME, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, serializeOutline, userEntry, userReopen, userStage } from './model.js'
 import { createActionLog } from './actions.js'
 import { isSessionName } from './terminal.js'
 import { isSessionId, localCommandsSince } from './transcript.js'
@@ -228,7 +228,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of events) if (TICKS.includes(e.kind) && ledger.unacked[e.num]) ledger.unacked[e.num].told = true
         // A node ticked and unticked again says only where it ended up.
         const last = new Map()
-        for (const e of events) last.set(e.kind === 'run' || e.kind === 'renamed' ? `${e.kind}:${e.num}` : e.num, e)
+        for (const e of events) last.set(e.kind === 'run' || e.kind === 'renamed' || e.kind === 'reopened-stage' ? `${e.kind}:${e.num}` : e.kind === 'stage' ? `stage:${e.num}:${e.stage}` : e.num, e)
         const by = kind => [...last.values()].filter(e => e.kind === kind)
         const refs = list => list.map(e => `${e.num} ${e.title}`).join('; ')
         const lines = []
@@ -237,6 +237,8 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         if (by('reopened').length) lines.push(`- took their approval back from ${refs(by('reopened'))}`)
         for (const e of by('run')) lines.push(`- pressed Run on ${e.num} ${e.title}: carry it out now, then finish it with its outcome`)
         for (const e of by('renamed')) lines.push(`- renamed the outline to "${e.title}"`)
+        for (const e of by('stage')) lines.push(`- turned ${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num} ${e.title}${e.on ? '' : ': it keeps its nodes, folded away, and asks nothing; adapt the topic to it'}`)
+        for (const e of by('reopened-stage')) lines.push(`- reopened ${e.num} ${e.title}: it is active again`)
         return `On the page, since you were last told, the user:\n${lines.join('\n')}\nThe outline already shows this; do not record it again.`
     }
 
@@ -247,7 +249,11 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of ledger.events) if (TICKS.includes(e.kind)) last.set(e.num, e)
         const nums = kind => [...last.values()].filter(e => e.kind === kind).map(e => e.num).join(', ')
         const parts = [nums('approved') && `approved ${nums('approved')}`, nums('picked') && `picked ${nums('picked')}`, nums('reopened') && `took back ${nums('reopened')}`].filter(Boolean)
-        return parts.length ? `Ticked in the outline: ${parts.join('; ')}.` : ''
+        // What the user did to the stages, as each one ended up.
+        const stages = new Map()
+        for (const e of ledger.events) if (e.kind === 'stage' || e.kind === 'reopened-stage') stages.set(`${e.kind}:${e.num}:${e.stage}`, e)
+        const turned = [...stages.values()].map(e => (e.kind === 'stage' ? `${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num}` : `reopened ${e.num}`))
+        return [parts.length && `Ticked in the outline: ${parts.join('; ')}.`, turned.length && `Stages changed in the outline: ${turned.join('; ')}.`].filter(Boolean).join(' ')
     }
 
     const telling = new Map()
@@ -615,7 +621,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
      * The user's ticks on the page (`set`: `{ num, approved }` per node) or a press of Run (`run`: a node number). Run
      * reaches the agent at once, ticks once the user has paused (`tellSoon`).
      */
-    async function act(project, file, { set, run }) {
+    async function act(project, file, { set, run, stage, reopen }) {
         const model = readModel(project, file)
         const ledger = readLedger(project, file)
         const at = Date.now()
@@ -630,6 +636,16 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                 ledger.unacked[e.num] = { kind: e.kind, title: e.title, told: false }
             }
             if (events.length) tellSoon(project, file)
+        }
+        // A stage the user turned on or off, or a Discussion or Plan they reopened: an action of theirs, in the action log,
+        // which the agent is told of once the user pauses, as of ticks.
+        const staged = stage !== undefined ? userStage(model, stage) : reopen !== undefined ? userReopen(model, String(reopen)) : undefined
+        if (staged) {
+            normalize(model)
+            writeModel(project, file, model)
+            actionLog.record(project, file, [staged], at)
+            ledger.events.push({ at, kind: staged.what === 'reopened' ? 'reopened-stage' : 'stage', num: staged.num, title: staged.title, stage: staged.stage, on: staged.what === 'turned-on' })
+            tellSoon(project, file)
         }
         let typed = false
         if (run !== undefined) {

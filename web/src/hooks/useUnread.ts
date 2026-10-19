@@ -21,7 +21,8 @@ import type { Outline, OutlineNode, RemovedNode, StatePatch, ViewerState } from 
  * with every other change under the node they opened (`accept`), or hides the diff again (`hide`).
  *
  * What is not a change: every node on a first visit, a node that only changed its number (the agent renumbers the
- * nodes after a removed one), and the user's own approval or pick, which applies at once.
+ * nodes after a removed one, or once when an outline gets its topics), the user's own approval or pick, which applies
+ * at once, and the outline's structure: a topic's heading and a stage's show as they are.
  */
 export function useUnread(outline: Outline, viewer: ViewerState, stateLoaded: boolean, patch: (p: StatePatch) => Promise<void>) {
     const nodes = useMemo(() => allNodes(outline.nodes), [outline])
@@ -62,6 +63,11 @@ export function useUnread(outline: Outline, viewer: ViewerState, stateLoaded: bo
             const was = read[node.num]
             // Inside a node that is new to the viewer: it comes with that node.
             if (added.some(num => node.num.startsWith(`${num}.`))) continue
+            // A topic's heading and a stage's are the outline's structure, never a change to open: what is under them is.
+            if (node.tags.includes('topic') || node.stage) {
+                if (was !== version) settle[node.num] = version
+                continue
+            }
             if (was !== undefined && isRead(was, node)) {
                 if (was !== version) settle[node.num] = version
             } else if (first || moved(node, version) || (was === undefined && node.level === 1 && !topicsTracked)) settle[node.num] = version

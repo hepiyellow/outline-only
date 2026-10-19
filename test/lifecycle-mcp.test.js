@@ -80,4 +80,22 @@ describe('the lifecycle through the MCP tools', () => {
         // A stage turned off asks nothing: its task is not in the queue.
         assert.doesNotMatch(off.text, /^Queue:/m)
     })
+
+    test('a stage the user turns on or off on the page is in the action log, and the agent is told with its next call', async () => {
+        const act = body =>
+            fetch(`${server.url}/api/outline/shop/${path.basename(file, '.md')}/act`, { method: 'POST', headers: { 'content-type': 'application/json', origin: server.url }, body: JSON.stringify(body) })
+        assert.equal((await act({ stage: { topic: '1', name: 'implementation', on: true } })).status, 200)
+        assert.equal((await act({ stage: { topic: '1', name: 'plan', on: false } })).status, 200)
+        // A topic always has a stage on, and what is not a topic has none.
+        assert.equal((await act({ stage: { topic: '1.1', name: 'plan', on: false } })).status, 400)
+        const read = await mcp.tool('read', { num: '1' })
+        assert.match(read.text, /^- turned Implementation on for 1 Search caching$/m)
+        assert.match(read.text, /^- turned Plan off for 1 Search caching: it keeps its nodes, folded away, and asks nothing; adapt the topic to it$/m)
+        assert.match(outlineText(), /^# 1\. @current @topic @stages:discussion,implementation @id:[a-z0-9]{6} Search caching$/m)
+        const history = await (await fetch(`${server.url}/api/outline/shop/${path.basename(file, '.md')}/history?num=1`, { headers: { origin: server.url } })).json()
+        assert.deepEqual(
+            history.flatMap(e => e.did ?? []).map(d => `${d.what} ${d.stage}`),
+            ['turned-off implementation', 'turned-on implementation', 'turned-off plan'],
+        )
+    })
 })

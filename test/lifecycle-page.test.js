@@ -72,4 +72,116 @@ describe('the lifecycle on the page', () => {
         await page.setViewportSize({ width: 1200, height: 900 })
         assert.equal(await indent('1.1.1.1.1.1'), 24)
     })
+
+    const TWO_TOPICS = `# 1. @topic @stages:discussion,plan,implementation @id:topic1 Search
+
+## 1.1 @stage:discussion @stage-done Discussion
+
+### 1.1.1 @agent-claim Use Redis
+
+## 1.2 @stage:plan Plan
+
+### 1.2.1 @plan-item Size the cluster
+
+## 1.3 @stage:implementation Implementation
+
+# 2. @topic @stages:implementation @id:topic2 Rollout
+
+## 2.3 @stage:implementation Implementation
+
+### 2.3.1 @task-done Deploy to staging
+
+### 2.3.2 @task Deploy everywhere
+
+@Task. Deploys it.
+
+## 2.4 @stage:verification Verification
+
+### 2.4.1 @task Watch the errors
+
+@Task. Watches them.
+`
+    const stage = num => page.locator(`.lc-stage:has(> [data-num="${num}"])`)
+    const switchOf = (topic, name) => page.locator(`[data-topic="${topic}"] [data-stage-switch="${name}"]`).first()
+
+    test('a plain outline looks as it does today: no topic heading, no stage rows, no switches', async () => {
+        await show('plain', `# 1. Goals\n\n## 1.1 @agent-claim Fast answers\n\n# 2. Plan\n\n## 2.1 Cache in Redis\n`)
+        assert.equal(await page.locator('.lc-bar, .lc-stage, .lc-topic, .stage-switch').count(), 0)
+        assert.equal(await page.locator('section.topic > .topic-head[data-num="2"]').count(), 1)
+        assert.ok(await node('2.1').isVisible())
+    })
+
+    test('each stage shows where it stands: done collapsed, active, the next dimmed, off folded and dimmed, with progress', async () => {
+        await show('stages', TWO_TOPICS)
+        assert.deepEqual(
+            await page.locator('.lc-stage').evaluateAll(els => els.map(el => [el.querySelector('.num').textContent, el.dataset.status, el.dataset.next ?? ''])),
+            [
+                ['1.1', 'done', ''],
+                ['1.2', 'active', ''],
+                ['1.3', 'not-started', 'true'],
+                ['2.3', 'active', ''],
+                ['2.4', 'off', ''],
+            ],
+        )
+        // Done: collapsed to its one line, with a button that reopens it.
+        assert.equal(await node('1.1.1').isVisible(), false)
+        assert.equal(await stage('1.1').locator('[data-stage-status]').textContent(), 'Done')
+        assert.equal(await stage('1.1').locator('[data-reopen]').count(), 1)
+        // Active, with what is in it.
+        assert.ok(await node('1.2.1').isVisible())
+        assert.equal(await stage('1.3').locator('[data-stage-status]').textContent(), 'Next')
+        assert.equal(await stage('1.3').locator('.stage-empty').textContent(), 'Nothing here yet.')
+        assert.ok(Number(await stage('1.3').locator('> .stage-head').evaluate(el => getComputedStyle(el).opacity)) < 1)
+        assert.match(await stage('2.3').locator('[data-progress]').textContent(), /1 of 2 done/)
+        // Off: folded away and dimmed, its nodes kept.
+        assert.equal(await node('2.4.1').isVisible(), false)
+        assert.ok(Number(await stage('2.4').locator('> .stage-head').evaluate(el => getComputedStyle(el).opacity)) < 1)
+        await stage('2.4').locator('> .stage-head').click()
+        assert.ok(await node('2.4.1').isVisible())
+        // Each topic has its heading, with its stages as switches.
+        assert.deepEqual(await page.locator('[data-topic="2"] > .topic-head [data-stage-switch]').evaluateAll(els => els.map(el => [el.dataset.stageSwitch, el.getAttribute('aria-pressed'), el.dataset.status])), [
+            ['discussion', 'false', 'off'],
+            ['plan', 'false', 'off'],
+            ['implementation', 'true', 'active'],
+            ['verification', 'false', 'off'],
+            ['preservation', 'false', 'off'],
+        ])
+        // The only stage on cannot be turned off.
+        assert.equal(await switchOf('2', 'implementation').isDisabled(), true)
+    })
+
+    test('the one topic has no heading: its stage rows show once it has a second stage', async () => {
+        await show('one', `# 1. @topic @stages:discussion,plan @id:topic1 Search\n\n## 1.1 @stage:discussion Discussion\n\n### 1.1.1 @agent-claim Use Redis\n\n## 1.2 @stage:plan Plan\n`)
+        assert.equal(await page.locator('.lc-topic, section.topic').count(), 0)
+        assert.equal(await page.locator('.lc-bar [data-stage-switch]').count(), 5)
+        assert.equal(await page.locator('.lc-stage').count(), 2)
+        await page.close()
+        await show('alone', `# 1. @topic @stages:discussion @id:topic1 Search\n\n## 1.1 @stage:discussion Discussion\n\n### 1.1.1 @agent-claim Use Redis\n`)
+        assert.equal(await page.locator('.lc-stage').count(), 0)
+        assert.ok(await node('1.1.1').isVisible())
+        assert.equal(await page.locator('.lc-bar [data-stage-switch]').count(), 5)
+    })
+
+    test('a stage is turned off and on from its switch, as the user’s act, and a done Discussion is reopened', async () => {
+        await show('switch', TWO_TOPICS)
+        const file = path.join(server.dir, 'demo', 'switch.md')
+        const text = () => fs.readFileSync(file, 'utf8')
+        await switchOf('1', 'plan').click()
+        await until(() => /^# 1\. @topic @stages:discussion,implementation @id:topic1 Search$/m.test(text()), { what: 'Plan to be turned off' })
+        // Its node is kept, and the stage folds away.
+        assert.match(text(), /^### 1\.2\.1 @plan-item Size the cluster$/m)
+        await until(async () => (await stage('1.2').getAttribute('data-status')) === 'off', { what: 'the stage to show off' })
+        assert.equal(await node('1.2.1').isVisible(), false)
+        const history = await (await fetch(`${server.url}/api/outline/demo/switch/history?num=1`, { headers: { origin: server.url } })).json()
+        assert.deepEqual(history.flatMap(e => e.did ?? []), [{ what: 'turned-off', kind: 'plain', stage: 'plan' }])
+        await switchOf('1', 'plan').click()
+        await until(() => /@stages:discussion,plan,implementation /.test(text()), { what: 'Plan to be turned on again' })
+        await until(async () => (await stage('1.2').getAttribute('data-status')) === 'active', { what: 'the stage to be active again' })
+        // A stage that was off and empty goes when turned off; turned on, it comes back.
+        await switchOf('2', 'preservation').click()
+        await until(() => /^## 2\.5 @stage:preservation Preservation$/m.test(text()), { what: 'Preservation to be on' })
+        await stage('1.1').locator('[data-reopen]').click()
+        await until(() => /^## 1\.1 @stage:discussion Discussion$/m.test(text()), { what: 'Discussion to be reopened' })
+        await until(async () => (await stage('1.1').getAttribute('data-status')) === 'active', { what: 'Discussion to be active' })
+    })
 })

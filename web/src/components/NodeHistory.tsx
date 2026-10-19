@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 const didText = ({ what, kind, stage }: NonNullable<HistoryEntry['did']>[number]): string => {
     // A stage turned on or off, or reopened, is the user's act on a topic's stages.
     if (what === 'turned-off' || what === 'turned-on') return `You turned ${stage ? stage[0].toUpperCase() + stage.slice(1) : 'a stage'} ${what === 'turned-off' ? 'off' : 'on'}`
+    if (what === 'reopened') return 'You reopened it'
     return what === 'ran'
         ? 'You ran it'
         : what === 'picked'

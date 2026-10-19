@@ -700,3 +700,95 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
         --indent: 10px;
     }
 }
+
+/* The lifecycle (server mode): a topic's stage switches, and each stage as a row over its nodes. */
+.lc-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 6px 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.lc-bar-label {
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.stage-switches {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+.topic-head > .stage-switches { margin-left: 8px; }
+.stage-switch {
+    padding: 1px 8px;
+    border: 1px dashed var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    background: transparent;
+    cursor: pointer;
+}
+.stage-switch[aria-pressed='true'] {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--foreground) 30%, transparent);
+    color: var(--foreground);
+}
+.stage-switch[aria-pressed='true'][data-status='active'] { border-color: var(--current); }
+.stage-switch[aria-pressed='true'][data-status='done'] { border-color: var(--approved); color: var(--approved); }
+.stage-switch:disabled { cursor: default; }
+.stage-switch:not(:disabled):hover { background: color-mix(in srgb, var(--foreground) 6%, var(--background)); }
+
+.row.stage-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: var(--rh);
+    padding: 4px 6px 4px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--foreground) 3%, var(--background));
+    font-size: 0.9em;
+    cursor: pointer;
+}
+.row.stage-head > .num { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.row.stage-head > .node-title { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85em; }
+.row.stage-head > .extras { margin-left: auto; }
+.stage-status {
+    padding: 0 6px;
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+}
+.stage-status[data-stage-status='active'] { color: var(--current); }
+.stage-status[data-stage-status='done'] { color: var(--approved); }
+.stage-reopen {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.7rem;
+}
+.stage-reopen:hover { color: var(--foreground); }
+.lc-stage[data-status='done'] > .stage-head { color: var(--settled); }
+/* The next stage, and a stage turned off, are dimmed; one turned off is folded away too, its nodes kept. */
+.lc-stage[data-next] > .stage-head,
+.lc-stage[data-status='off'] > .stage-head,
+.lc-stage[data-status='off'] > .kids {
+    opacity: 0.55;
+}
+.lc-stage[data-status='off'] > .stage-head > .node-title { text-decoration: line-through; }
+.lc-stage > .kids { padding: 0 0 4px var(--indent); }
+.stage-empty {
+    margin: 0;
+    padding: 6px 12px;
+    color: var(--muted-foreground);
+    font-size: 0.85em;
+    font-style: italic;
+}

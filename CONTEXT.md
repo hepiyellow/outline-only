@@ -113,7 +113,7 @@ The user's own mark on a node, shown by the tick in its box. It is the only tick
 _Avoid_: Status, checkbox, resolved, agent-approved, done, and a bare "approved" (it does not say who approved), pending human approval (the human has approved; the agent has not recorded it)
 
 **Action log**:
-The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, turned it off (a stage), each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
+The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, turned it off or on (a stage), reopened it (a Discussion or a Plan), each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
 _Avoid_: Approval log (it holds picks and runs too), audit log, undo history (undo is the viewer state's steps)
 
 **Question**:
@@ -180,7 +180,7 @@ The agent's stored log of a session's messages and tool calls.
 _Avoid_: History, log
 
 **Action**:
-Something the user does on a node of the outline: approve it, pick an option, run a task, turn a stage off, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
+Something the user does on a node of the outline: approve it, pick an option, run a task, turn a stage on or off, reopen a stage, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
 _Avoid_: Task (that is the agent's), and "action" for anything the agent does
 
 **Task**:
