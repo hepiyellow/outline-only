@@ -57,4 +57,19 @@ describe('the lifecycle on the page', () => {
         await node('2.1').locator('[data-link-to="1.1"]').click()
         await until(() => node('1.1').isVisible(), { what: '1.1 to be shown' })
     })
+
+    test('a node eight levels deep shows under its parent, and past six levels a narrow window indents less', async () => {
+        const lines = []
+        for (let level = 1; level <= 8; level++) lines.push(`${'#'.repeat(Math.min(level, 6))} ${Array(level).fill(1).join('.')}${level === 1 ? '.' : ''} Level ${level}`, '', 'Text.', '')
+        await show('deep', lines.join('\n'), { width: 600, height: 900 })
+        const deep = node('1.1.1.1.1.1.1.1')
+        await deep.waitFor()
+        assert.match(await deep.locator('.node-title').textContent(), /Level 8/)
+        const indent = num => page.locator(`.group:has(> [data-num="${num}"]) > .kids`).evaluate(el => parseFloat(getComputedStyle(el).paddingLeft))
+        assert.equal(await indent('1.1.1.1'), 24)
+        assert.equal(await indent('1.1.1.1.1.1'), 10)
+        // On a wide window every level is indented alike.
+        await page.setViewportSize({ width: 1200, height: 900 })
+        assert.equal(await indent('1.1.1.1.1.1'), 24)
+    })
 })

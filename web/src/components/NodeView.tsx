@@ -653,6 +653,9 @@ export function RemovedRow({ node, topic }: { node: RemovedNode; topic?: boolean
     )
 }
 
+/** The level from which a node's children are indented less on a narrow window: past six levels the outline would run out of room. */
+const DEEP = 6
+
 /** A node with children: a header row that sticks while they scroll by, and collapses them. */
 function Group({ node }: { node: OutlineNode }) {
     const { statuses, isOpen, toggle, current, onCheck } = useOutlineCtx()
@@ -670,7 +673,7 @@ function Group({ node }: { node: OutlineNode }) {
         }
     }
     return (
-        <div className={cn('group', !open && 'closed')} data-diff={diff}>
+        <div className={cn('group', !open && 'closed')} data-diff={diff} data-deep={node.level >= DEEP || undefined}>
             <div
                 className={cn('row parent sticky-head', box.done && 'done', current.has(node.num) && 'current')}
                 data-num={node.num}

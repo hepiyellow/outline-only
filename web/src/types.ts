@@ -18,7 +18,7 @@ export interface ClosingLine {
 export interface OutlineNode {
     /** The full number path, as in the file: `2.1.3`. */
     num: string
-    /** 1 for a topic, down to 6. */
+    /** 1 for a top-level node, down to 10 (past 6 the heading has six `#` and its number says the level). */
     level: number
     tags: Tag[]
     /** The status in the file, from the node's own tags (a parent's rolled-up status is the page's to work out). */

@@ -84,7 +84,7 @@ function extractQueue(source) {
 
 /**
  * The outline's nodes are its headings: `# 2. @user-approved Title` is a topic, `## 2.1 @agent-claim @options Title` a node under
- * it, down to `######`. A node's text is everything up to the next heading, rendered as ordinary markdown (bullets
+ * it, down to `######`, which also writes the nodes past the sixth level (server mode): their number says how deep they are. A node's text is everything up to the next heading, rendered as ordinary markdown (bullets
  * included). Status and the other tags sit on the heading line, right after the number.
  */
 export const HEAD_RE = /^(\d+(?:\.\d+)*)\.?(?:\s+|$)([\s\S]*)$/
@@ -168,7 +168,11 @@ function parseOutline(source) {
             stack[stack.length - 1].body.push(t)
             continue
         }
-        const node = headNode(tokens[i + 1].content, Number(t.tag.slice(1)))
+        const hashes = Number(t.tag.slice(1))
+        const node = headNode(tokens[i + 1].content, hashes)
+        // Past six levels a heading is written with six `#` signs, and its number says how deep it is.
+        const depth = node.num ? node.num.split('.').length : 0
+        if (hashes === 6 && depth > 6) node.level = depth
         node.start = t.map[0]
         while (stack[stack.length - 1].level >= node.level) stack.pop().end = node.start
         stack[stack.length - 1].children.push(node)

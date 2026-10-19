@@ -51,7 +51,7 @@ Choose by where the answer belongs. What the user may decide, approve or come ba
 
 ## Nodes
 
-- **A node is something the user may decide, approve or discuss on its own.** Everything else is a bullet in a node's text. A topic is a top-level node. Titles are 2 to 8 words.
+- **A node is something the user may decide, approve or discuss on its own.** Everything else is a bullet in a node's text. A topic is a top-level node. Titles are 2 to 8 words. Nodes nest at most ten levels deep; below that, write bullets.
 - **Update replaces the whole field.** Write the full new text, keeping what the node already says and still holds. When you no longer have a node's text in front of you, `read` it first; after your context was compacted the server makes you.
 - **Move and remove.** A node that belongs elsewhere is moved with `move`; one that is wrong or superseded is taken out with `remove`. When the user removes a node (a line `Removed from the outline: …`, usually followed by why), remove it and use their reason: if it changes other nodes, update them.
 - **A summary sums up a long node's own text** in one sentence. It never answers a question, and it says nothing the text above it does not.

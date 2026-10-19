@@ -693,3 +693,10 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
     cursor: pointer;
 }
 .link-num:hover { text-decoration-style: solid; }
+
+/* Past six levels a narrow window would run out of room: the nodes under a deep node are indented less. */
+@media (max-width: 720px) {
+    .group[data-deep] > .kids {
+        --indent: 10px;
+    }
+}

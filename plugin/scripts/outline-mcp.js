@@ -65,7 +65,7 @@ const TOOLS = [
         description: [
             'Change the outline: a list of operations applied together, all or none. Make one call per turn, after your answer is decided. The result carries what the user did on the page since you were last told, and a map of the outline.',
             'Operations (op):',
-            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, links?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat. links names the nodes it comes from.',
+            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, links?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent, at most ten levels deep. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat. links names the nodes it comes from.',
             '- update { num, title?, text?, summary?, recommendation?, task?, status?, ask?, recommended?, links? }: each field given replaces that whole field ("" clears it), so write the full new text.',
             '- move { num, under }: puts a node under another parent ("" for the top level), where it takes the next number.',
             '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered, and a link to a node taken out is dropped.',

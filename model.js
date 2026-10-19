@@ -5,8 +5,13 @@ import { HEAD_RE, OPTION_RE, TAG_RE, TRAIL_MARK, VALUE_TAG, extractHeaders } fro
 // `change` and the user's clicks apply to them, the rules the server keeps on its own (numbers, roll-up, the current
 // node, the queue), and the file written back. outline.js stays the one reader for the page.
 
-/** Nodes nest at most six levels deep (a markdown heading has no seventh). */
-const MAX_LEVEL = 6
+/**
+ * Nodes nest at most ten levels deep. A markdown heading has six: past them a node is written with `######`, and its
+ * level is read from its full number (`headingLevel`).
+ */
+export const MAX_LEVEL = 10
+/** The most `#` signs a heading has. */
+const MAX_HASHES = 6
 const NUM_RE = /^\d+(\.\d+)*$/
 
 /** An operation the server refuses: why, and what to do about it. `text` is the node as it is now, for a stale update. */
@@ -33,6 +38,15 @@ function walkLines(lines, each) {
 }
 
 const HEADING = /^(#{1,6}) +(.*)$/
+
+/**
+ * A heading's level: the count of its `#` signs, unless it has six and a number deeper than that, which a node past
+ * the sixth level has: then the depth of its number.
+ */
+export function headingLevel(hashes, num) {
+    const depth = num ? num.split('.').length : 0
+    return hashes === MAX_HASHES && depth > MAX_HASHES ? depth : hashes
+}
 
 function blankNode(level) {
     return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], text: '', summary: '', recommendation: '', taskLine: '', children: [] }
@@ -109,6 +123,7 @@ export function parseOutline(text) {
         const m = !inFence && line.match(HEADING)
         if (!m) return stack.at(-1).lines.push(line)
         const node = headingNode(m[2], m[1].length)
+        node.level = headingLevel(m[1].length, node.num)
         node.lines = []
         while (stack.at(-1).level >= node.level) stack.pop()
         stack.at(-1).children.push(node)
@@ -149,7 +164,7 @@ function headingLine(node) {
         node.links.length && `@links:${node.links.join(',')}`,
     ].filter(Boolean)
     const num = node.num ? `${node.num}${node.level === 1 ? '.' : ''}` : ''
-    return `${'#'.repeat(node.level)} ${[num, ...tags, node.title].filter(Boolean).join(' ')}`
+    return `${'#'.repeat(Math.min(node.level, MAX_HASHES))} ${[num, ...tags, node.title].filter(Boolean).join(' ')}`
 }
 
 /** The model as the outline's text: what the page's reader (outline.js) and the Markdown tab read. */

@@ -160,3 +160,51 @@ describe('stable ids and links', () => {
         assert.equal(findNode(model, '3.2').links[0], findNode(model, '3.1').id)
     })
 })
+
+/** An outline with one chain of nodes `depth` levels deep: 1, 1.1, 1.1.1, … */
+function chain(depth) {
+    const lines = []
+    for (let level = 1; level <= depth; level++) {
+        const num = Array(level).fill(1).join('.')
+        lines.push(`${'#'.repeat(Math.min(level, 6))} ${num}${level === 1 ? '.' : ''} Level ${level}`, '')
+    }
+    return lines.join('\n')
+}
+
+describe('ten levels', () => {
+    test('a level-8 node round-trips: written with six # signs, its level read from its number', () => {
+        const model = outline(chain(8))
+        const deep = findNode(model, '1.1.1.1.1.1.1.1')
+        assert.equal(deep.level, 8)
+        assert.equal(findNode(model, '1.1.1.1.1.1.1').children[0], deep)
+        const text = serializeOutline(model)
+        assert.match(text, /^###### 1\.1\.1\.1\.1\.1\.1\.1 Level 8$/m)
+        assert.equal(text, HEAD + chain(8))
+        // The page reads it as deep, under its parent.
+        let node = outlinePayload(text).nodes[0]
+        while (node.children.length) node = node.children[0]
+        assert.equal(node.level, 8)
+        assert.equal(node.num, '1.1.1.1.1.1.1.1')
+    })
+
+    test('a heading of six # signs with a number of six parts or fewer reads as before', () => {
+        const model = outline('# 1. Top\n\n###### 1.1 Too many signs\n')
+        assert.equal(findNode(model, '1.1').level, 6)
+        assert.equal(serializeOutline(model), HEAD + '# 1. Top\n\n###### 1.1 Too many signs\n')
+    })
+
+    test('nodes are added down to the tenth level, and an eleventh is refused', () => {
+        const model = outline(chain(9))
+        change(model, [{ op: 'add', num: '1.1.1.1.1.1.1.1.1.1', title: 'Level 10' }])
+        assert.equal(findNode(model, '1.1.1.1.1.1.1.1.1.1').level, 10)
+        refused(model, [{ op: 'add', num: '1.1.1.1.1.1.1.1.1.1.1', title: 'Level 11' }], /would be 11 levels deep; nodes nest at most 10/, /bullets/)
+        refused(model, [{ op: 'add', num: '2', title: 'Deep', children: [{ title: 'a', children: [{ title: 'b', children: [{ title: 'c', children: [{ title: 'd', children: [{ title: 'e', children: [{ title: 'f', children: [{ title: 'g', children: [{ title: 'h', children: [{ title: 'i', children: [{ title: 'j' }] }] }] }] }] }] }] }] }] }] }], /11 levels deep/)
+    })
+
+    test('a move that would take nodes past the tenth level is refused', () => {
+        const model = outline(chain(6) + '\n# 2. Branch\n\n## 2.1 Down\n\n### 2.1.1 Further\n\n#### 2.1.1.1 Still\n\n##### 2.1.1.1.1 Deepest\n')
+        refused(model, [{ op: 'move', num: '2', under: '1.1.1.1.1.1' }], /deeper than 10 levels/, /higher up/)
+        change(model, [{ op: 'move', num: '2.1.1', under: '1.1.1.1.1.1' }])
+        assert.equal(findNode(model, '1.1.1.1.1.1.1.1.1').level, 9)
+    })
+})
