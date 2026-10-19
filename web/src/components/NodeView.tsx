@@ -1,9 +1,10 @@
 import { createContext, useContext, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from 'react'
-import { ChevronDown, ClipboardCopy, Copy, History, Reply, Sparkle, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, ClipboardCopy, Copy, History, Reply, Sparkle, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { copyText } from '@/lib/send'
 import type { Statuses } from '@/lib/status'
-import { DONE_PILL, FAILED_PILL, liveHtml, type NodeContent } from '@/lib/content'
+import { DONE_PILL, FAILED_PILL, contentHtml, liveHtml, type NodeContent } from '@/lib/content'
+import { allNodes } from '@/lib/outline'
 import type { Box, KindKey, MarksChange } from '@/lib/status'
 import type { Message, OutlineNode, QueueItem, RemovedNode } from '@/types'
 import { NodeMessages } from './Inbox'
@@ -34,21 +35,36 @@ export interface OutlineContext {
     onHistory: (node: OutlineNode) => void
     /** The changes that wait for the viewer to open them, by node: changed nodes, and nodes added. */
     pending: ReadonlyMap<string, PendingChange>
-    /** Nodes changed since the viewer read them: what they read, shown until they open the change. */
+    /** Nodes changed since the viewer read them: what they read, shown until they open the diff. */
     unread: Map<string, NodeContent>
-    /** Unread nodes being opened: their diff button is gone, their text animating. */
-    opening: Set<string>
-    /** A click on a node's diff button: opens its own change and every change under it. */
+    /** Changed nodes in the diff view: their title and text as they are now, with what changed marked. */
+    diffs: Map<string, NodeContent>
+    /** The changes in the diff view (node numbers, and `removed:<id>`), each with the number it is at or under. */
+    reviewing: ReadonlyMap<string, string>
+    /** The nodes whose diff button opened the diff view: they can accept every change under them at once. */
+    roots: ReadonlySet<string>
+    /** The changes in the diff view at a node or under it. */
+    diffsAt: (num: string) => string[]
+    /** Whether a node takes no action yet: its change, or that of the added node it is in, is not accepted. */
+    held: (num: string) => boolean
+    /** Whether a node is an added node whose diff is open, or inside one. */
+    addedIn: (num: string) => boolean
+    /** A changed node whose kind mark changes: the mark it had, and the one accepting it brings. */
+    kindChangeOf: (num: string) => { from?: KindKey; to?: KindKey } | undefined
+    /** A click on a node's diff button: opens the diff of its own change and of every change under it. */
     onOpenChange: (node: OutlineNode) => void
+    /** Accepts changes in the diff view: the nodes then read as they are now, and removed ones are gone. */
+    onAccept: (keys: string[]) => void
+    /** Hides the diff view at a node and under it (or of one removed node): its changes wait again. */
+    onHide: (key: string) => void
     /** The nodes taken out since the viewer last looked that stood directly under a node (`''`: the topics). */
     removedIn: (parent: string) => RemovedNode[]
-    /** How many nodes were taken out anywhere under a node. */
+    /** How many nodes were taken out anywhere under a node, whose diff is not open. */
     removedUnder: (num: string) => number
-    /** A click on a removed row's minus: the viewer has seen it go. */
-    onSeenRemoved: (node: RemovedNode) => void
-    /** The nodes under a node with a change to open, and opening them all. */
+    /** A click on a removed row's minus: the row shows in the diff view, to be accepted. */
+    onReviewRemoved: (node: RemovedNode) => void
+    /** The nodes under a node with a change whose diff is not open. */
     unreadUnder: (num: string) => string[]
-    onOpenUnreadUnder: (node: OutlineNode) => void
     /** The agent's messages about a node or any node under it. */
     messagesFor: (num: string) => Message[]
     seen: Record<string, number>
@@ -131,26 +147,26 @@ function pointAtPick(num: string) {
     pulseBox(button)
 }
 
-/** Whether a row holds the button that picks it: an option, once the viewer has opened it (one just added is a bare row). */
+/** Whether a row holds the button that picks it: an option, unless it is a bare row (added, its diff not open). */
 const usePickable = (node: OutlineNode) => {
-    const { statuses, pending } = useOutlineCtx()
-    return statuses.isOption(node) && pending.get(node.num)?.kind !== 'added'
+    const { statuses, pending, reviewing } = useOutlineCtx()
+    return statuses.isOption(node) && !(pending.get(node.num)?.kind === 'added' && !reviewing.has(node.num))
 }
 
 /**
  * An option's pick button, first in its text, with a line that says what a click on it does. It is where an option is
  * picked: nothing left of a title does that. Once picked it says so, and a click takes the pick back; picking another
- * option moves the pick. An option whose change waits is not picked: the user has not seen what they would pick.
+ * option moves the pick. An option whose change waits is not picked: the user has not accepted what they would pick.
  */
 function PickLine({ node, className, hidden }: { node: OutlineNode; className?: string; hidden?: boolean }) {
-    const { statuses, pending, onCheck } = useOutlineCtx()
+    const { statuses, held, onCheck } = useOutlineCtx()
     const box = statuses.box(node)
     const question = statuses.parent(node)
     const picked = box.state !== 'open'
     const other = question?.children.find(c => c !== node && statuses.effective(c))
-    const unread = pending.has(node.num)
+    const unread = held(node.num)
     const line = unread
-        ? 'Open the change of this option before you pick it.'
+        ? 'Accept the change of this option before you pick it.'
         : picked
           ? `Your answer to ${question?.num}. A click takes it back.`
           : other
@@ -305,7 +321,7 @@ function RemoveButton({ node }: { node: OutlineNode }) {
 
 /** A parent's buttons on hover: the reference, the markdown copy, the history, the trash, and the diff of everything changed under it. */
 function Asks({ node }: { node: OutlineNode }) {
-    const { unreadUnder, onOpenUnreadUnder } = useOutlineCtx()
+    const { unreadUnder, onOpenChange } = useOutlineCtx()
     const under = unreadUnder(node.num).length
     return (
         <span className="asks">
@@ -322,7 +338,7 @@ function Asks({ node }: { node: OutlineNode }) {
                     aria-label={`See what changed under ${node.num}`}
                     onClick={e => {
                         e.stopPropagation()
-                        onOpenUnreadUnder(node)
+                        onOpenChange(node)
                     }}
                 >
                     {DIFF_ICON}
@@ -333,39 +349,113 @@ function Asks({ node }: { node: OutlineNode }) {
 }
 
 /**
- * The diff button, the one icon left of a title: the node has a change the viewer has not opened. A plus over a minus
- * for a node that changed (opening it animates the node to its new text), a plus for one that was added. A closed
- * parent shows it for the changes under it, which nothing else on screen would say; an open one leaves that to its
- * nodes. A click opens the node's change and every change under it.
+ * The diff button, the one icon left of a title: the node has a change the viewer has not accepted. A plus over a minus
+ * for a node that changed, a plus for one that was added. A closed parent shows it for the changes under it, which
+ * nothing else on screen would say; an open one leaves that to its nodes. A click opens the diff of the node's change
+ * and of every change under it; on a node whose diff is open, it hides the diff again.
  */
 function Diff({ node }: { node: OutlineNode }) {
-    const { pending, unreadUnder, removedUnder, isOpen, onOpenChange } = useOutlineCtx()
+    const { pending, reviewing, unreadUnder, removedUnder, isOpen, onOpenChange, onHide } = useOutlineCtx()
     const own = pending.get(node.num)
+    const shown = !!own && reviewing.has(node.num)
     const under = !own && !isOpen(node) ? unreadUnder(node.num).length + removedUnder(node.num) : 0
     if (!own && !under) return null
     const added = own?.kind === 'added'
-    const title = added
-        ? 'Added since you last looked: click to open it'
-        : own
-          ? `Changed since you read it${own.done ? ', and now done' : ''}: click to see what changed`
-          : `${under} change${under === 1 ? '' : 's'} under this node since you read ${under === 1 ? 'it' : 'them'}: click to open ${under === 1 ? 'it' : 'them'}`
+    const title = shown
+        ? 'Showing what changed: click to hide it again'
+        : added
+          ? 'Added since you last looked: click to see it'
+          : own
+            ? `Changed since you read it${own.done ? ', and now done' : ''}: click to see what changed`
+            : `${under} change${under === 1 ? '' : 's'} under this node since you read ${under === 1 ? 'it' : 'them'}: click to see ${under === 1 ? 'it' : 'them'}`
     return (
         <button
             type="button"
             className="env"
             data-change={added ? 'added' : own ? 'changed' : 'under'}
+            data-open={shown || undefined}
             // The new content has the agent's Done tag: the change is an action carried out, which the icon shows in yellow.
             data-done={own?.done || undefined}
+            aria-pressed={own ? shown : undefined}
             title={title}
-            aria-label={added ? `Open the new node ${node.num}` : own ? `See what changed in ${node.num}` : `See what changed under ${node.num}`}
+            aria-label={shown ? `Hide what changed in ${node.num}` : added ? `See the new node ${node.num}` : own ? `See what changed in ${node.num}` : `See what changed under ${node.num}`}
             onClick={e => {
                 e.stopPropagation()
-                onOpenChange(node)
+                if (shown) onHide(node.num)
+                else onOpenChange(node)
             }}
         >
             {added ? PLUS_ICON : DIFF_ICON}
         </button>
     )
+}
+
+/** What a kind mark is, in a word or two, for the diff bar. */
+const KIND_NAME: Record<KindKey, string> = {
+    claim: 'claim',
+    'claim-approved': 'approved claim',
+    question: 'question',
+    answered: 'answered question',
+    action: 'task',
+    done: 'done task',
+    failed: 'failed task',
+}
+
+/**
+ * The bar of a node in the diff view, above its text: what the change is (changed, with its kind if that changed too,
+ * or added), and the button that accepts it. On the node whose diff button opened the view, it also accepts every
+ * change under it at once, and hides the diff.
+ */
+function DiffBar({ node }: { node: OutlineNode }) {
+    const { pending, reviewing, roots, diffsAt, kindChangeOf, onAccept, onHide } = useOutlineCtx()
+    const own = reviewing.has(node.num) ? pending.get(node.num) : undefined
+    const root = roots.has(node.num)
+    const all = root ? diffsAt(node.num) : []
+    if (!own && !all.length) return null
+    const kind = own?.kind === 'changed' ? kindChangeOf(node.num) : undefined
+    const under = own?.kind === 'added' ? allNodes([node]).length - 1 : 0
+    const others = all.filter(key => key !== node.num).length
+    return (
+        <div className="diff-bar" data-diff-bar={node.num} onClick={e => e.stopPropagation()}>
+            {own ? (
+                <span className="diff-what" data-change={own.kind}>
+                    {own.kind === 'added' ? `Added${under ? `, with ${under} node${under === 1 ? '' : 's'} under it` : ''}` : `Changed${own.done ? ', and now done' : ''}`}
+                </span>
+            ) : (
+                <span className="diff-what" data-change="under">
+                    {others} change{others === 1 ? '' : 's'} under this node
+                </span>
+            )}
+            {kind && (
+                <span className="diff-kind" data-kind-change>
+                    {kind.from ? KIND_NAME[kind.from] : 'plain'} → {kind.to ? KIND_NAME[kind.to] : 'plain'}
+                </span>
+            )}
+            <span className="diff-buttons">
+                {own && (
+                    <button type="button" className="diff-btn accept" data-accept title="Accept this change: the node then reads as it is now" onClick={() => onAccept([node.num])}>
+                        <Check aria-hidden="true" /> Accept
+                    </button>
+                )}
+                {others > 0 && (
+                    <button type="button" className="diff-btn accept" data-accept-all title="Accept every change shown here and under this node" onClick={() => onAccept(all)}>
+                        <Check aria-hidden="true" /> {all.length === 1 ? 'Accept' : `Accept all ${all.length}`}
+                    </button>
+                )}
+                {root && (
+                    <button type="button" className="diff-btn" data-hide-diff title="Hide the diff: the changes wait behind their diff buttons again" aria-label={`Hide the diff of ${node.num}`} onClick={() => onHide(node.num)}>
+                        <X aria-hidden="true" />
+                    </button>
+                )}
+            </span>
+        </div>
+    )
+}
+
+/** How a node is drawn in the diff view: whole and new (the added node itself), or changed. */
+const useDiffMark = (node: OutlineNode) => {
+    const { pending, reviewing } = useOutlineCtx()
+    return reviewing.has(node.num) ? (pending.get(node.num)?.kind === 'added' ? 'added' : 'changed') : undefined
 }
 
 /**
@@ -432,10 +522,13 @@ const useAsked = (node: OutlineNode) => {
     return queued.has(node.num) || (!!parent && statuses.isOption(node) && queued.has(parent.num)) || undefined
 }
 
-/** What a node shows: what the viewer read, while the change is unread. */
+/**
+ * What a node shows: what the viewer read, while its change waits; the diff of it, once the diff is open; and in an
+ * added node whose diff is open, the text without the button that runs a task, which is not accepted yet.
+ */
 const useShown = (node: OutlineNode): NodeContent => {
-    const { unread } = useOutlineCtx()
-    return unread.get(node.num) ?? { titleHtml: node.titleHtml, html: liveHtml(node) }
+    const { unread, diffs, addedIn } = useOutlineCtx()
+    return diffs.get(node.num) ?? unread.get(node.num) ?? { titleHtml: node.titleHtml, html: addedIn(node.num) ? contentHtml(node) : liveHtml(node) }
 }
 
 /** Clicks on controls, and text being selected, do not toggle a row. */
@@ -467,22 +560,28 @@ export function NodeList({ nodes, under }: { nodes: OutlineNode[]; under: string
 }
 
 /**
- * A node the agent took out, where it stood: its old number struck through, its title, and the minus that lets it go.
- * It is not a node of the outline any more: it is not counted, and the nodes after it carry their new numbers.
+ * A node the agent took out, where it stood: its old number struck through, its title, and the minus that shows it in
+ * the diff view, where it is accepted. It is not a node of the outline any more: it is not counted, and the nodes
+ * after it carry their new numbers.
  */
 export function RemovedRow({ node, topic }: { node: RemovedNode; topic?: boolean }) {
-    const { onSeenRemoved } = useOutlineCtx()
+    const { reviewing, onReviewRemoved, onHide, onAccept } = useOutlineCtx()
+    const key = `removed:${node.id}`
+    const shown = reviewing.has(key)
     return (
-        <div className={topic ? 'topic-head removed' : 'row leaf removed'} data-removed={node.id}>
+        <div className={topic ? 'topic-head removed' : 'row leaf removed'} data-removed={node.id} data-diff={shown ? 'removed' : undefined}>
             <button
                 type="button"
                 className="env"
                 data-change="removed"
-                title="Removed since you last looked: click to let it go"
-                aria-label={`Let the removed node ${node.num} go`}
+                data-open={shown || undefined}
+                aria-pressed={shown}
+                title={shown ? 'Showing the removal: click to hide it again' : 'Removed since you last looked: click to see it'}
+                aria-label={shown ? `Hide the removal of ${node.num}` : `See the removal of ${node.num}`}
                 onClick={e => {
                     e.stopPropagation()
-                    onSeenRemoved(node)
+                    if (shown) onHide(key)
+                    else onReviewRemoved(node)
                 }}
             >
                 {MINUS_ICON}
@@ -496,6 +595,18 @@ export function RemovedRow({ node, topic }: { node: RemovedNode; topic?: boolean
                 {topic && <s>{node.num}.</s>} <span className="title-html" dangerouslySetInnerHTML={{ __html: node.titleHtml }} />
                 {node.count > 0 && <span className="removed-count"> and {node.count} under it</span>}
             </span>
+            {shown && (
+                <span className="diff-bar removed-bar" data-diff-bar={key}>
+                    <span className="diff-what" data-change="removed">
+                        Removed
+                    </span>
+                    <span className="diff-buttons">
+                        <button type="button" className="diff-btn accept" data-accept title="Accept this removal: the row goes" onClick={() => onAccept([key])}>
+                            <Check aria-hidden="true" /> Accept
+                        </button>
+                    </span>
+                </span>
+            )}
         </div>
     )
 }
@@ -508,6 +619,7 @@ function Group({ node }: { node: OutlineNode }) {
     const shown = useShown(node)
     const asked = useAsked(node)
     const pickable = usePickable(node)
+    const diff = useDiffMark(node)
     const count = node.children.length
     const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -516,7 +628,7 @@ function Group({ node }: { node: OutlineNode }) {
         }
     }
     return (
-        <div className={cn('group', !open && 'closed')}>
+        <div className={cn('group', !open && 'closed')} data-diff={diff}>
             <div
                 className={cn('row parent sticky-head', box.done && 'done', current.has(node.num) && 'current')}
                 data-num={node.num}
@@ -538,8 +650,8 @@ function Group({ node }: { node: OutlineNode }) {
                 <Asks node={node} />
             </div>
             <div className="kids" hidden={!open}>
+                <DiffBar node={node} />
                 {pickable && <PickLine node={node} className="group-pick" />}
-                {/* Kept when empty: the diff animation may fill it. */}
                 <NodeText node={node} className="group-text node-html" html={shown.html} hidden={!shown.html} />
                 <NodeList nodes={node.children} under={node.num} />
             </div>
@@ -555,6 +667,7 @@ function Leaf({ node }: { node: OutlineNode }) {
     const asked = useAsked(node)
     const open = isOpen(node)
     const pickable = usePickable(node)
+    const diff = useDiffMark(node)
     // Only a node with text has something to hide; an option's pick button is in its text.
     const text = !!shown.html || pickable
     return (
@@ -562,6 +675,7 @@ function Leaf({ node }: { node: OutlineNode }) {
             className={cn('row leaf', text && 'has-text', text && !open && 'closed', box.done && 'done', current.has(node.num) && 'current')}
             data-num={node.num}
             data-asked={asked}
+            data-diff={diff}
             aria-expanded={text ? open : undefined}
             onClick={e => text && isRowClick(e) && toggle(node)}
         >
@@ -578,6 +692,7 @@ function Leaf({ node }: { node: OutlineNode }) {
                 <HistoryButton node={node} />
                 <RemoveButton node={node} />
             </span>
+            <DiffBar node={node} />
             {pickable && <PickLine node={node} hidden={!open} />}
             <NodeText node={node} className="node-html" html={shown.html} hidden={!open} />
         </div>
@@ -591,8 +706,9 @@ export function Topic({ node }: { node: OutlineNode }) {
     const box = statuses.topicBox(node)
     const asked = useAsked(node)
     const shown = useShown(node)
+    const diff = useDiffMark(node)
     return (
-        <section className={cn('topic', !open && 'closed', box.done && 'done')}>
+        <section className={cn('topic', !open && 'closed', box.done && 'done')} data-diff={diff}>
             <div
                 className={cn('topic-head sticky-head', current.has(node.num) && 'current')}
                 data-num={node.num}
@@ -612,7 +728,7 @@ export function Topic({ node }: { node: OutlineNode }) {
                 <Asks node={node} />
             </div>
             <div className="topic-body" hidden={!open}>
-                {/* Kept when empty: the diff animation may fill it. */}
+                <DiffBar node={node} />
                 <NodeText node={node} className="topic-text node-html" html={shown.html} hidden={!shown.html} />
                 <NodeList nodes={node.children} under={node.num} />
             </div>

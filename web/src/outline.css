@@ -140,7 +140,7 @@ html {
     /* The first cell holds the approval box, 20px in. The triangle's place stays empty on a node without text, so that
        every row starts its number in one column. */
     grid-template-columns: 48px 22px auto minmax(0, max-content) minmax(0, 1fr) auto auto auto;
-    grid-template-areas: 'ck tri num title . msg tags ask' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
+    grid-template-areas: 'ck tri num title . msg tags ask' 'ck . diff diff diff diff diff diff' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
     align-items: baseline;
     margin: 0 0 4px;
     padding-left: 12px;
@@ -556,33 +556,39 @@ button.ck[data-state='open']:hover { border-color: var(--tick); }
 }
 
 
-/* The diff animation: words are units (a word and the space after it) that grow in or collapse. Words about to go are
-   marked first: red for removed ones, orange for rewritten ones, whose new words come in orange too; added ones in green. */
-.tx-u { display: inline-block; white-space: pre; overflow: clip; vertical-align: baseline; }
-.tx-n .tx-u:not(.on) { display: none; }
-.tx-n .tx-u.on { animation: txadd var(--tx-fade, 1s) ease-out forwards; }
-.tx-n.c .tx-u.on { animation: txchg var(--tx-fade, 1s) ease-out forwards; }
-/* In a rewritten run, the words beyond the ones replaced one for one: added ones in green, removed ones in red. */
-.tx-n.c .tx-u.x.on { animation-name: txadd; }
-.tx-o .tx-u { --tx-mark: var(--danger); color: var(--tx-mark); background: color-mix(in srgb, var(--tx-mark) 18%, transparent); animation: txmark 0.15s ease-out; }
-.tx-o.c .tx-u:not(.x) { --tx-mark: var(--changed); }
-.tx-hide { display: none !important; }
-.tx-cur {
-    position: fixed;
-    left: 0;
-    top: 0;
-    width: 2px;
-    margin-left: -1px;
-    border-radius: 1px;
-    background: var(--claim);
-    box-shadow: 0 0 6px var(--claim);
-    pointer-events: none;
-    z-index: 60;
-    transition: transform 0.07s linear, height 0.07s linear, opacity 0.1s;
-}
-@keyframes txadd { from { background: color-mix(in srgb, var(--approved) 50%, transparent); } to { background: transparent; } }
-@keyframes txchg { from { background: color-mix(in srgb, var(--changed) 45%, transparent); } to { background: transparent; } }
-@keyframes txmark { from { color: inherit; background: transparent; } }
+/* The diff view of a pending change, as a code diff: what the change took out struck through in red, what it brought
+   in green. Words are marked in their text; a whole block (a paragraph, a list item, a closing line) is marked with a
+   line at its left. */
+del.dx-del { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent); border-radius: 2px; }
+ins.dx-add { color: var(--foreground); background: color-mix(in srgb, var(--approved) 22%, transparent); text-decoration: none; border-radius: 2px; }
+.dx-del-block, .dx-add-block { border-radius: 3px; padding-left: 6px; }
+.dx-del-block { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); box-shadow: inset 3px 0 0 var(--danger); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.dx-add-block { color: var(--foreground); background: color-mix(in srgb, var(--approved) 14%, transparent); box-shadow: inset 3px 0 0 var(--approved); }
+li.dx-del-block, li.dx-add-block { padding-left: 4px; }
+/* A node added, its diff open: it is there whole, everything under it new. A node removed: its row in red. */
+:is(.group, .topic)[data-diff='added'], .row.leaf[data-diff='added'] { background: color-mix(in srgb, var(--approved) 8%, transparent); box-shadow: inset 3px 0 0 var(--approved); border-radius: 4px; }
+.removed[data-diff='removed'] { background: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 3px 0 0 var(--danger); border-radius: 4px; }
+.removed[data-diff='removed'] .title-html { text-decoration: line-through; color: var(--danger); }
+/* The bar over a node in the diff view: what the change is, and the buttons that accept it. */
+.diff-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--muted-foreground); cursor: default; }
+.row.leaf > .diff-bar { grid-area: diff; padding: 2px 14px 4px 38px; }
+.kids > .diff-bar, .topic-body > .diff-bar { padding: 6px 14px 2px 38px; }
+.topic-body > .diff-bar { padding-left: 4px; }
+.row.leaf.removed > .removed-bar { grid-area: 1 / -2 / 2 / -1; padding: 0 8px; align-self: center; }
+.topic-head.removed > .removed-bar { margin-left: auto; padding-right: 8px; }
+.diff-what { font-weight: 600; }
+.diff-what[data-change='added'] { color: var(--approved); }
+.diff-what[data-change='removed'] { color: var(--danger); }
+.diff-what[data-change='changed'], .diff-what[data-change='under'] { color: var(--claim); }
+.diff-kind { padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--foreground) 10%, transparent); color: var(--foreground); }
+.diff-buttons { display: inline-flex; gap: 6px; margin-left: auto; }
+.diff-btn { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; cursor: pointer; }
+.diff-btn svg { width: 12px; height: 12px; }
+.diff-btn:hover { background: var(--accent); }
+.diff-btn.accept { border-color: color-mix(in srgb, var(--approved) 55%, transparent); color: var(--approved); }
+.diff-btn.accept:hover { background: color-mix(in srgb, var(--approved) 14%, transparent); }
+/* A diff button whose diff is open: filled, as a pressed toggle. */
+.row .env[data-open], .topic-head > .env[data-open] { background: var(--claim); color: var(--background); }
 
 /* A node's own envelope: muted (the queue column's is red). On a bubble it sits top right; on a parent row or topic it
    takes its place in the row, before the rolled-up icons. */
@@ -660,10 +666,3 @@ button.ck[data-state='open']:hover { border-color: var(--tick); }
 .hist-head .num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .hist-body { padding: 0 0 2px 4px; color: var(--muted-foreground); }
 .hist-kids { padding-left: 16px; border-left: 1px solid var(--border); }
-/* Switching to another change: a node about to go is marked red, with all under it; a node whose text is about to change
-   orange, itself only; a node that comes in is green, fading while it grows. */
-.hist-node, .hist-node > :is(.hist-head, .hist-body) { border-radius: 4px; transition: background-color 0.15s ease-out, box-shadow 0.15s ease-out; }
-.hist-node.hist-del { background: color-mix(in srgb, var(--danger) 16%, transparent); box-shadow: inset 2px 0 0 var(--danger); }
-.hist-node.hist-chg > :is(.hist-head, .hist-body) { background: color-mix(in srgb, var(--changed) 16%, transparent); box-shadow: inset 2px 0 0 var(--changed); }
-.hist-node.hist-add { animation: histadd 0.5s ease-out; }
-@keyframes histadd { from { background: color-mix(in srgb, var(--approved) 30%, transparent); } }

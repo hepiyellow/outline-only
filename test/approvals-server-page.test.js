@@ -141,9 +141,11 @@ describe('approvals, picks, runs and undo in server mode', () => {
     test('an option that is a task is picked first: its Run button is off until then, and points at the pick button', async () => {
         const added = await change([{ op: 'add', num: '3.4', title: 'How to roll out', text: 'Pick one of the options below.', options: [{ title: 'Canary first', task: 'Roll out to one instance.' }, { title: 'All at once' }] }])
         assert.equal(added.ok, true)
-        // An option just added is a bare row, with no button to pick what the user has not seen.
+        // An option just added is a bare row, with no button to pick what the user has not seen; its diff shows it, and
+        // accepting it makes it one to pick.
         await node('3.4').locator('> .env').waitFor()
         await node('3.4').locator('> .env').click()
+        await page.locator('.outline-tab [data-diff-bar="3.4"] [data-accept]').click()
         await pick('3.4.1').waitFor()
         const run = node('3.4.1').locator('[data-run]')
         await until(async () => (await run.getAttribute('aria-disabled')) === 'true', { what: 'the Run button of 3.4.1 to be off' })
@@ -178,10 +180,11 @@ describe('approvals, picks, runs and undo in server mode', () => {
         await node('2.4').locator('> .env').waitFor()
         assert.equal(await node('2').getAttribute('aria-expanded'), 'true')
         assert.deepEqual((await node('2.4').locator('.closing .pill').allTextContents()).map(t => t.trim()), ['Action'])
-        // Opening the change turns its Action tag into Done. With that, nothing under the topic is open any more:
-        // once the change has been shown, the topic collapses. Its box rolls up approvals only, and the user approved
+        // Accepting the change turns its Action tag into Done. With that, nothing under the topic is open any more:
+        // once the change is accepted, the topic collapses. Its box rolls up approvals only, and the user approved
         // some of what is under it.
         await node('2.4').locator('> .env').click()
+        await page.locator('.outline-tab [data-diff-bar="2.4"] [data-accept]').click()
         await expanded('2', false)
         assert.equal(await state('2'), 'mixed')
         await expand('2')
@@ -296,8 +299,8 @@ describe('approvals, picks, runs and undo in server mode', () => {
         // The request has ended: the ring is gone, and the change waits to be opened.
         await node('2.4').locator('[data-run-sent]').waitFor({ state: 'detached' })
         await node('2.4').locator('> .env').click()
+        await page.locator('.outline-tab [data-diff-bar="2.4"] [data-accept]').click()
         await node('2.4').locator('.closing .pill-failed').waitFor()
-        await page.locator('.tx-cur').waitFor({ state: 'detached' })
         assert.deepEqual((await node('2.4').locator('.closing .pill').allTextContents()).map(t => t.trim()), ['Failed', 'Run again'])
         // Still in the queue, and it can be run again.
         assert.equal(await page.locator('[data-queue="2.4"]').count(), 1)

@@ -107,9 +107,10 @@ function Loaded({ outline, gone, viewer, stateLoaded, patch, session, transcript
     )
     const messagesFor = useCallback((num: string) => messagesAbout(num, session.messages), [session.messages])
     const onSeen = useCallback((ids: string[]) => patch({ seen: Object.fromEntries(ids.map(id => [id, 1])) }), [patch])
-    const { pending, unread, opening, openChange, unreadNums, unreadUnder, openUnreadUnder } = useUnread(outline, viewer, stateLoaded, patch)
-    // The outline as the viewer sees it: a node whose change waits is as they read it, and an added one a bare row.
-    const shown = useMemo(() => shownNodes(outline.nodes, pending), [outline, pending])
+    const { pending, unread, diffs, reviewing, roots, unreadNums, unreadUnder, diffsAt, review, reviewRemoved, accept, hide } = useUnread(outline, viewer, stateLoaded, patch)
+    // The outline as the viewer sees it: a node whose change waits is as they read it, and an added one a bare row
+    // until its diff is open.
+    const shown = useMemo(() => shownNodes(outline.nodes, pending, reviewing), [outline, pending, reviewing])
     // The nodes taken out that the viewer has not seen go, each where it stood, as long as that place is shown.
     const removed = useMemo<RemovedNode[]>(() => {
         if (!stateLoaded) return []
@@ -118,46 +119,70 @@ function Loaded({ outline, gone, viewer, stateLoaded, patch, session, transcript
         return (outline.removed ?? []).filter(t => !viewer.seen[`removed:${t.id}`] && (!t.parent || there.has(t.parent)))
     }, [outline.removed, viewer.seen, shown, stateLoaded])
     const removedUnder = useCallback((num: string) => removed.filter(t => t.parent === num || t.parent.startsWith(`${num}.`)), [removed])
+    /** Inside an added node whose diff is open, that node included: it is shown whole, as new. */
+    const addedIn = useCallback(
+        (num: string) => [...reviewing.keys()].some(key => pending.get(key)?.kind === 'added' && (num === key || num.startsWith(`${key}.`))),
+        [reviewing, pending],
+    )
+    const statuses = useMemo(() => new Statuses(outline.nodes, viewer.overrides), [outline, viewer.overrides])
+    /** A changed node whose kind changed too: its kind mark as the viewer read it, and as accepting the change makes it. */
+    const kindChanges = useMemo(() => {
+        const was = new Statuses(shown, viewer.overrides)
+        const before = new Map(allNodes(shown).map(n => [n.num, n]))
+        const after = new Map(allNodes(outline.nodes).map(n => [n.num, n]))
+        const keyOf = (s: Statuses, node?: OutlineNode): KindKey | undefined => node && (node.level === 1 ? s.topicBox(node) : s.box(node)).markKey
+        const map = new Map<string, { from?: KindKey; to?: KindKey }>()
+        for (const [num, change] of pending) {
+            if (change.kind !== 'changed') continue
+            const from = keyOf(was, before.get(num))
+            const to = keyOf(statuses, after.get(num))
+            if (from !== to) map.set(num, { from, to })
+        }
+        return map
+    }, [outline, shown, viewer.overrides, statuses, pending])
     const actions = useMemo<NodeActions>(() => {
         // The rows hold the nodes as they are shown; what the user does applies to the node as it is. A node whose
-        // change waits takes no approval: the user has not seen what they would approve.
+        // change waits takes no approval: the user has not accepted what they would approve.
         const live = (node: OutlineNode) => allNodes(outline.nodes).find(n => n.num === node.num) ?? node
+        const held = (num: string) => pending.has(num) || addedIn(num)
         return {
             linked,
             onCheck: node => {
-                if (!pending.has(node.num)) clickNode(live(node))
+                if (!held(node.num)) clickNode(live(node))
             },
             onTopicCheck: topic => {
-                if (!pending.has(topic.num)) clickTopic(live(topic))
+                if (!held(topic.num)) clickTopic(live(topic))
             },
             onRun: node => run(live(node)),
             onReference: node => onReference(live(node)),
             onRemove: node => onRemove(live(node)),
             pending,
             unread,
-            opening,
-            // A node's diff button opens everything under it: the nodes taken out there are seen to go with it.
-            onOpenChange: node => {
-                openChange(live(node))
-                const gone = removedUnder(node.num)
-                if (gone.length) onSeen(gone.map(t => `removed:${t.id}`))
-            },
+            diffs,
+            reviewing,
+            roots,
+            held,
+            addedIn,
+            kindChangeOf: num => kindChanges.get(num),
+            // A node's diff button opens the diff of everything under it, the nodes taken out there included.
+            onOpenChange: node => review(live(node), removedUnder(node.num)),
+            onAccept: accept,
+            onHide: hide,
+            diffsAt,
             removedIn: parent => removed.filter(t => t.parent === parent),
-            removedUnder: num => removedUnder(num).length,
-            onSeenRemoved: t => onSeen([`removed:${t.id}`]),
+            removedUnder: num => removedUnder(num).filter(t => !reviewing.has(`removed:${t.id}`)).length,
+            onReviewRemoved: reviewRemoved,
             unreadUnder,
-            onOpenUnreadUnder: node => openUnreadUnder(live(node)),
             messagesFor,
             seen: viewer.seen,
             onSeen,
             onReveal: (num: string, then?: (el: HTMLElement) => void, inside?: boolean) => revealRef.current(num, then, inside),
         }
-    }, [outline, linked, clickNode, clickTopic, run, onReference, onRemove, pending, unread, opening, openChange, removed, removedUnder, unreadUnder, openUnreadUnder, messagesFor, viewer.seen, onSeen])
-    const statuses = useMemo(() => new Statuses(outline.nodes, viewer.overrides), [outline, viewer.overrides])
+    }, [outline, linked, clickNode, clickTopic, run, onReference, onRemove, pending, unread, diffs, reviewing, roots, addedIn, kindChanges, review, accept, hide, diffsAt, removed, removedUnder, reviewRemoved, unreadUnder, messagesFor, viewer.seen, onSeen])
     /**
      * The change indicators of the queue column: in outline order, or the oldest change first when the viewer chose
      * so (the server says when its agent changed each node). One of a node whose own kind mark changes is drawn with
-     * the new mark, which is what opening the change brings.
+     * the new mark, which is what accepting the change brings.
      */
     const changes = useMemo<ChangeIndicator[]>(() => {
         const was = new Statuses(shown, viewer.overrides)

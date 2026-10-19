@@ -148,10 +148,11 @@ describe('approvals, picks, runs and undo in file mode', () => {
         assert.equal(await node('2').getAttribute('aria-expanded'), 'true')
         assert.equal(await mark('2.4'), 'action')
         assert.deepEqual((await node('2.4').locator('.closing .pill').allTextContents()).map(t => t.trim()), ['Action'])
-        // Opening the change turns its Action tag into Done. With that, nothing under the topic is open any more:
-        // once the change has been shown, the topic collapses. Its box rolls up approvals only (the user approved some
+        // Accepting the change turns its Action tag into Done. With that, nothing under the topic is open any more:
+        // once the change is accepted, the topic collapses. Its box rolls up approvals only (the user approved some
         // of what is under it).
         await node('2.4').locator('> .env').click()
+        await page.locator('.outline-tab [data-diff-bar="2.4"] [data-accept]').click()
         await expanded('2', false)
         assert.equal(await state('2'), 'mixed')
         await expand('2')
@@ -285,8 +286,8 @@ describe('approvals, picks, runs and undo in file mode', () => {
         // The request has ended: the ring is gone, and the change waits to be opened.
         await node('2.4').locator('[data-run-sent]').waitFor({ state: 'detached' })
         await node('2.4').locator('> .env').click()
+        await page.locator('.outline-tab [data-diff-bar="2.4"] [data-accept]').click()
         await node('2.4').locator('.closing .pill-failed').waitFor()
-        await page.locator('.tx-cur').waitFor({ state: 'detached' })
         assert.deepEqual((await node('2.4').locator('.closing .pill').allTextContents()).map(t => t.trim()), ['Failed', 'Run again'])
         // Still in the queue, and it can be run again.
         assert.equal(await page.locator('[data-queue="2.4"]').count(), 1)

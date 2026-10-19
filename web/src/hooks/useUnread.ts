@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { contentHtml, isRead, parseVersion, readVersion, wording, type NodeContent } from '@/lib/content'
-import { animateTo } from '@/lib/diffAnimation'
-import { allNodes } from '@/lib/outline'
+import { diffHtml } from '@/lib/diff'
+import { allNodes, pathNums } from '@/lib/outline'
 import type { PendingChange } from '@/lib/pending'
-import type { Outline, OutlineNode, StatePatch, ViewerState } from '@/types'
+import type { Outline, OutlineNode, RemovedNode, StatePatch, ViewerState } from '@/types'
 
 /**
  * Pending changes: what the agent changed in the outline since the viewer read it waits until they open it, so the
@@ -11,9 +11,14 @@ import type { Outline, OutlineNode, StatePatch, ViewerState } from '@/types'
  * state, topics included.
  *
  * - A node that reads differently from what they read is `changed`: the page keeps showing what they read, with a
- *   diff button. Opening it animates the node to its new text.
+ *   diff button.
  * - A node they have not read is `added`: it is there as a bare row, with a plus, and everything under it comes with
- *   it when it is opened.
+ *   it.
+ *
+ * The diff button opens the diff view of the node and of every change under it (`review`): a changed node shows its
+ * title and text as they are now, with the words that went struck through and those that came marked; an added one is
+ * there whole; a removed one is a row struck through. Each change waits there until the viewer accepts it, alone or
+ * with every other change under the node they opened (`accept`), or hides the diff again (`hide`).
  *
  * What is not a change: every node on a first visit, a node that only changed its number (the agent renumbers the
  * nodes after a removed one), and the user's own approval or pick, which applies at once.
@@ -21,7 +26,12 @@ import type { Outline, OutlineNode, StatePatch, ViewerState } from '@/types'
 export function useUnread(outline: Outline, viewer: ViewerState, stateLoaded: boolean, patch: (p: StatePatch) => Promise<void>) {
     const nodes = useMemo(() => allNodes(outline.nodes), [outline])
     const byNum = useMemo(() => new Map(nodes.map(n => [n.num, n])), [nodes])
-    const [opening, setOpening] = useState<Set<string>>(new Set())
+    /**
+     * The changes in the diff view, each with where it is: a changed or added node by its number, and a removed node
+     * (`removed:<id>`) by the number of the node it stood under. The nodes whose diff button opened them are `roots`.
+     */
+    const [shownDiffs, setShownDiffs] = useState<Map<string, string>>(new Map())
+    const [roots, setRoots] = useState<Set<string>>(new Set())
     const latest = useRef(outline)
     latest.current = outline
 
@@ -68,116 +78,92 @@ export function useUnread(outline: Outline, viewer: ViewerState, stateLoaded: bo
         if (Object.keys(settle).length) patch({ read: settle })
     }, [settle, patch])
 
-    /** Changed nodes as the viewer read them. A node being opened keeps its old HTML as far as React knows: the animation owns its DOM until it ends. */
+    /** The changes in the diff view: of a node, only one that still waits (another window may have accepted it). */
+    const reviewing = useMemo(() => new Map([...shownDiffs].filter(([key]) => key.startsWith('removed:') || pending.has(key))), [shownDiffs, pending])
+
+    /** Changed nodes as the viewer read them, shown until they open the diff. */
     const unread = useMemo(() => {
         const map = new Map<string, NodeContent>()
-        for (const [num, change] of pending) if (change.kind === 'changed' && change.was) map.set(num, change.was)
+        for (const [num, change] of pending) if (change.kind === 'changed' && change.was && !reviewing.has(num)) map.set(num, change.was)
         return map
-    }, [pending])
+    }, [pending, reviewing])
 
-    /** The changes that still wait: those being opened count as opened from the moment the animation starts. */
-    const waiting = useMemo(() => new Map([...pending].filter(([num]) => !opening.has(num))), [pending, opening])
-    const unreadNums = useMemo(() => [...waiting.keys()], [waiting])
+    /** Changed nodes in the diff view: their title and text as they are now, with what changed marked. */
+    const diffs = useMemo(() => {
+        const map = new Map<string, NodeContent>()
+        for (const [num, change] of pending) {
+            const node = byNum.get(num)
+            if (change.kind !== 'changed' || !change.was || !node || !reviewing.has(num)) continue
+            map.set(num, { titleHtml: diffHtml(change.was.titleHtml, node.titleHtml), html: diffHtml(change.was.html, contentHtml(node)) })
+        }
+        return map
+    }, [pending, reviewing, byNum])
+
+    const unreadNums = useMemo(() => [...pending.keys()], [pending])
 
     const now = (num: string) => allNodes(latest.current.nodes).find(n => n.num === num)
 
-    /** Opens the change of one changed node: animates it to its new title and text. */
-    const openUnread = useCallback(
-        async (node: OutlineNode) => {
-            const row = document.querySelector(`.outline-tab [data-num="${CSS.escape(node.num)}"]`)
-            const title = row?.querySelector<HTMLElement>(':scope > .node-title > .title-html')
-            const body =
-                node.level === 1
-                    ? row?.parentElement?.querySelector<HTMLElement>(':scope > .topic-body > .topic-text')
-                    : node.children.length
-                      ? row?.parentElement?.querySelector<HTMLElement>(':scope > .kids > .group-text')
-                      : row?.querySelector<HTMLElement>(':scope > .node-html')
-            const live = now(node.num) ?? node
-            setOpening(o => new Set(o).add(node.num))
-            // A collapsed node (an approved or done one starts so) is shown by the diff; its open state follows, or the
-            // triangle would say closed over the text and the next click on the row would only open it.
-            if (body?.hidden || body?.closest('[hidden]')) patch({ open: { [node.num]: true } })
-            try {
-                if (title && body) {
-                    body.hidden = false
-                    await animateTo([title, body], [live.titleHtml, contentHtml(live)])
-                }
-            } finally {
-                await patch({ read: { [node.num]: readVersion(live) } })
-                setOpening(o => {
-                    const next = new Set(o)
-                    next.delete(node.num)
-                    return next
-                })
-            }
-        },
-        [patch],
-    )
+    /** The nodes under `num` (not `num` itself) with a change whose diff is not open yet, in outline order. */
+    const unreadUnder = useCallback((num: string) => unreadNums.filter(n => n.startsWith(`${num}.`) && !reviewing.has(n)), [unreadNums, reviewing])
 
-    /** The nodes under `num` (not `num` itself) with a change to open, in outline order. */
-    const unreadUnder = useCallback((num: string) => unreadNums.filter(n => n.startsWith(`${num}.`)), [unreadNums])
-
-    /** What a node and everything under it reads as now: what opening an added node records. */
+    /** What a node and everything under it reads as now: what accepting an added node records. */
     const versionsUnder = (num: string) => Object.fromEntries(allNodes(now(num) ? [now(num)!] : []).map(n => [n.num, readVersion(n)]))
 
-    /**
-     * Opens every change under a node. The node stays where it is on the screen: the browser's own scroll anchoring is
-     * switched off meanwhile (it would keep some other element still, and move this one), and the node's offset from the
-     * top of the window is held while its descendants change size. Changes in view play their animation, together; the
-     * rest (collapsed, off screen, or added nodes) are taken in at once.
-     */
-    const openUnreadUnder = useCallback(
-        async (node: OutlineNode) => {
-            const nums = unreadUnder(node.num)
-            if (!nums.length) return
-            const anchor = document.querySelector<HTMLElement>(`.outline-tab [data-num="${CSS.escape(node.num)}"]`)
-            const top = anchor?.getBoundingClientRect().top ?? 0
-            const root = document.documentElement
-            const anchoring = root.style.overflowAnchor
-            root.style.overflowAnchor = 'none'
-            let holding = true
-            const hold = () => {
-                if (!holding) return
-                const delta = (anchor?.getBoundingClientRect().top ?? top) - top
-                if (Math.abs(delta) > 0.5) scrollBy(0, delta)
-                requestAnimationFrame(hold)
-            }
-            requestAnimationFrame(hold)
-            try {
-                const inView = (num: string) => {
-                    const body = document.querySelector(`.outline-tab [data-num="${CSS.escape(num)}"]`)
-                    const r = body?.getBoundingClientRect()
-                    return !!r && r.height > 0 && r.bottom > 0 && r.top < innerHeight
-                }
-                const animated = nums.filter(n => pending.get(n)?.kind === 'changed' && inView(n))
-                const rest = nums.filter(n => !animated.includes(n))
-                const quiet = Object.assign({}, ...rest.map(n => (pending.get(n)?.kind === 'added' ? versionsUnder(n) : now(n) ? { [n]: readVersion(now(n)!) } : {})))
-                const shown = animated.flatMap(n => (now(n) ? [now(n)!] : []))
-                await Promise.all([Object.keys(quiet).length ? patch({ read: quiet }) : Promise.resolve(), ...shown.map(n => openUnread(n))])
-            } finally {
-                // One more frame, so the last change has been laid out before the hold ends.
-                await new Promise(r => requestAnimationFrame(() => r(null)))
-                holding = false
-                root.style.overflowAnchor = anchoring
-            }
-        },
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [unreadUnder, openUnread, patch, pending],
-    )
+    /** The changes in the diff view at a node or anywhere under it, its own first. */
+    const diffsAt = useCallback((num: string) => [...reviewing].filter(([, at]) => at === num || at.startsWith(`${num}.`)).map(([key]) => key), [reviewing])
 
     /**
-     * A click on a node's diff button: opens the node's own change and every change under it. An added node comes with
-     * everything under it, and opens: what is new is what there is to read.
+     * A click on a node's diff button: opens the diff view of the node's own change and of every change under it,
+     * the nodes taken out there (`removed`) included, and opens the way to each so that it shows.
      */
-    const openChange = useCallback(
-        async (node: OutlineNode) => {
-            const own = waiting.get(node.num)
-            if (own?.kind === 'added') return patch({ read: versionsUnder(node.num), open: { [node.num]: true } })
-            await Promise.all([own ? openUnread(node) : Promise.resolve(), openUnreadUnder(node)])
+    const review = useCallback(
+        (node: OutlineNode, removed: RemovedNode[] = []) => {
+            const changes: [string, string][] = [
+                ...unreadNums.filter(n => n === node.num || n.startsWith(`${node.num}.`)).map((n): [string, string] => [n, n]),
+                ...removed.map((t): [string, string] => [`removed:${t.id}`, t.parent]),
+            ]
+            if (!changes.length) return
+            setShownDiffs(d => new Map([...d, ...changes]))
+            setRoots(r => new Set(r).add(node.num))
+            const open: Record<string, boolean> = { [node.num]: true }
+            for (const [, at] of changes) if (at) for (const n of pathNums(at)) open[n] = true
+            patch({ open })
         },
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [waiting, openUnread, openUnreadUnder, patch],
+        [unreadNums, patch],
     )
 
-    return { pending: waiting, unread, opening, openUnread, openChange, unreadNums, unreadUnder, openUnreadUnder }
+    /** Accepts changes in the diff view: each node then reads as it is now, and a removed one is gone. */
+    const accept = useCallback(
+        (keys: string[]) => {
+            const read: Record<string, string> = {}
+            const seen: Record<string, number> = {}
+            for (const key of keys) {
+                if (key.startsWith('removed:')) seen[key] = 1
+                else if (pending.get(key)?.kind === 'added') Object.assign(read, versionsUnder(key))
+                else if (now(key)) read[key] = readVersion(now(key)!)
+            }
+            setShownDiffs(d => new Map([...d].filter(([key]) => !keys.includes(key))))
+            patch({ ...(Object.keys(read).length ? { read } : {}), ...(Object.keys(seen).length ? { seen } : {}) })
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [pending, patch],
+    )
+
+    /** A click on a removed row's minus: the row shows as a change in the diff view, to be accepted. */
+    const reviewRemoved = useCallback((t: RemovedNode) => setShownDiffs(d => new Map(d).set(`removed:${t.id}`, t.parent)), [])
+
+    /**
+     * Closes the diff view at a node and under it, or of one removed node (`removed:<id>`): the changes wait behind
+     * their diff buttons again.
+     */
+    const hide = useCallback(
+        (num: string) => {
+            const keys = num.startsWith('removed:') ? [num] : diffsAt(num)
+            setShownDiffs(d => new Map([...d].filter(([key]) => !keys.includes(key))))
+            setRoots(r => new Set([...r].filter(n => n !== num && !n.startsWith(`${num}.`))))
+        },
+        [diffsAt],
+    )
+
+    return { pending, unread, diffs, reviewing, roots, unreadNums, unreadUnder, diffsAt, review, reviewRemoved, accept, hide }
 }

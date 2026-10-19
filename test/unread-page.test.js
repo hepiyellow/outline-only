@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { after, afterEach, before, beforeEach, describe, test } from 'node:test'
-import { FIXTURES, launchBrowser, startServer, until } from './helpers.js'
+import { launchBrowser, startServer, until } from './helpers.js'
 
 describe('unread changes', () => {
     let server, browser, page
@@ -35,11 +35,14 @@ describe('unread changes', () => {
 
     const node = num => page.locator(`.outline-tab [data-num="${num}"]`)
     const text = num => node(num).locator('.node-html').textContent()
+    /** The diff bar of a node in the diff view, and its buttons. */
+    const bar = num => page.locator(`.outline-tab [data-diff-bar="${num}"]`)
+    const accept = num => bar(num).locator('[data-accept]')
     const readState = async () => (await (await fetch(`${server.url}/api/state/demo/sample`)).json()).read
     /** On a first visit every node below the topics (20 in sample.md) counts as read; this waits until the page has recorded it. */
     const firstVisit = () => until(async () => Object.keys((await (await fetch(`${server.url}/api/state/demo/sample`)).json()).read).length >= 20, { what: 'the first visit to be recorded' })
 
-    test('a rewritten node keeps what was read, with a diff button; a new node is a bare row with a plus until it is opened', async () => {
+    test('a rewritten node keeps what was read, with a diff button; a new node is a bare row with a plus until it is accepted', async () => {
         await open()
         await firstVisit()
         assert.equal(await page.locator('.outline-tab .env').count(), 0)
@@ -55,10 +58,17 @@ describe('unread changes', () => {
         assert.equal(await page.locator('[aria-label="Changes to open"] [data-unread="3.4"]').getAttribute('data-change'), 'added')
         // Approving 4.1 is the user's own doing, recorded by the agent: nothing to open.
         assert.equal(await node('4.1').locator('> .env').count(), 0)
-        // The plus opens it: its text is there, and nothing is left to open on it.
+        // The plus shows it in the diff view, whole and marked as new: it waits there until it is accepted.
         await plus.click()
         await page.waitForFunction(() => /Replay the top thousand queries/.test(document.querySelector('.outline-tab [data-num="3.4"] .node-html')?.textContent ?? ''))
+        assert.equal(await node('3.4').getAttribute('data-diff'), 'added')
+        assert.equal(await plus.getAttribute('aria-pressed'), 'true')
+        assert.match(await bar('3.4').textContent(), /Added/)
+        assert.equal(await page.locator('[data-unread="3.4"]').count(), 1)
+        await accept('3.4').click()
+        await bar('3.4').waitFor({ state: 'detached' })
         assert.equal(await node('3.4').locator('> .env').count(), 0)
+        assert.equal(await node('3.4').getAttribute('data-diff'), null)
         assert.equal(await page.locator('[data-unread="3.4"]').count(), 0)
         // 2.3 is in the action queue, so the column shows it once, there: it has no change indicator of its own, and
         // its item says the node changed.
@@ -103,14 +113,18 @@ describe('unread changes', () => {
         // Opening it brings a claim, so that is what the indicator is drawn with; the row itself has no mark yet.
         assert.equal(await indicator.getAttribute('data-mark'), 'claim')
         assert.equal(await own().count(), 0)
+        // The diff says the kind changes; the mark comes with accepting it.
         await node('3.3').locator('> .env').click()
+        assert.equal((await bar('3.3').locator('[data-kind-change]').textContent()).trim(), 'plain → claim')
+        assert.equal(await own().count(), 0)
+        await accept('3.3').click()
         await own().waitFor()
         assert.equal(await own().getAttribute('data-kind'), 'claim')
         assert.equal(await page.locator('[data-unread="3.3"]').count(), 0)
     })
 
-    test('a topic waits like any node: its title and text stay as read until its diff button is clicked', async () => {
-        await open({ reducedMotion: 'reduce' })
+    test('a topic waits like any node: its title and text stay as read until its change is accepted', async () => {
+        await open()
         await firstVisit()
         const title = () => node('3').locator('.title-html').textContent()
         rewrite(text => text.replace('# 3. Invalidation\n', '# 3. Invalidation rules\n\nWhat drops an entry, and when.\n'))
@@ -118,13 +132,20 @@ describe('unread changes', () => {
         await button.waitFor()
         assert.equal(await title(), 'Invalidation')
         await button.click()
+        // The diff: the word added to the title, and the paragraph added to the text.
+        await node('3').locator('.title-html ins.dx-add').waitFor()
+        assert.equal(await node('3').locator('.title-html ins.dx-add').textContent(), 'rules')
+        const topicText = page.locator('.outline-tab .topic:has(> [data-num="3"]) .topic-text')
+        assert.match(await topicText.locator('.dx-add-block').textContent(), /What drops an entry, and when\./)
+        await accept('3').click()
         await page.waitForFunction(() => document.querySelector('.outline-tab [data-num="3"] .title-html').textContent === 'Invalidation rules')
-        assert.match(await page.locator('.outline-tab .topic:has(> [data-num="3"]) .topic-text').textContent(), /What drops an entry, and when\./)
+        assert.equal(await page.locator('.outline-tab .dx-add, .outline-tab .dx-add-block').count(), 0)
+        assert.match(await topicText.textContent(), /What drops an entry, and when\./)
         assert.equal(await node('3').locator('> .env').count(), 0)
     })
 
-    test('a closed parent shows the diff button for what waits under it, and a click opens all of it; an open one leaves it to its nodes', async () => {
-        await open({ reducedMotion: 'reduce' })
+    test('a closed parent shows the diff button for what waits under it; a click shows all of it, to accept one at a time or all at once', async () => {
+        await open()
         await firstVisit()
         rewrite(text => text.replace('## 3.2 Time to live\n', '## 3.2 Time to live\n\nNow ten minutes.\n').replace('## 3.3 Who can flush the cache by hand\n', '## 3.3 Who can flush the cache by hand\n\nOperators only.\n'))
         await node('3.2').locator('> .env').waitFor()
@@ -136,9 +157,26 @@ describe('unread changes', () => {
         assert.equal(await button.getAttribute('data-change'), 'under')
         assert.match(await button.getAttribute('title'), /^2 changes under this node/)
         await button.click()
-        await until(async () => /ten minutes/.test((await readState())['3.2']) && /Operators only/.test((await readState())['3.3']), { what: 'both changes to be taken in' })
+        // The parent opens on both changes, each in the diff view with its own Accept, and the parent's bar accepts both.
+        await bar('3.2').waitFor()
+        assert.match(await node('3.2').locator('.node-html .dx-add-block').textContent(), /Now ten minutes/)
+        assert.match(await node('3.3').locator('.node-html .dx-add-block').textContent(), /Operators only/)
+        assert.match(await bar('3').textContent(), /2 changes under this node/)
+        assert.equal(await page.locator('[data-unread]').count(), 2)
+        // One at a time: 3.2 is taken in, 3.3 still waits.
+        await accept('3.2').click()
+        await until(async () => /ten minutes/.test((await readState())['3.2']), { what: 'the first change to be taken in' })
+        assert.doesNotMatch((await readState())['3.3'], /Operators only/)
+        assert.equal(await node('3.2').locator('.dx-add-block').count(), 0)
+        assert.deepEqual(await page.locator('[data-unread]').evaluateAll(els => els.map(e => e.dataset.unread)), ['3.3'])
+        // Then the rest, from the parent.
+        assert.equal((await bar('3').locator('[data-accept-all]').textContent()).trim(), 'Accept')
+        await bar('3').locator('[data-accept-all]').click()
+        await until(async () => /Operators only/.test((await readState())['3.3']), { what: 'the other change to be taken in' })
+        await bar('3').waitFor({ state: 'detached' })
         assert.equal(await node('3').locator('> .env').count(), 0)
         assert.equal(await page.locator('[data-unread]').count(), 0)
+        assert.equal(await page.locator('.outline-tab .diff-bar').count(), 0)
     })
 
     test('a new topic comes with everything under it: one row and one indicator until its plus is clicked', async () => {
@@ -156,36 +194,52 @@ describe('unread changes', () => {
         assert.equal(await node('5.1').count(), 0)
         await plus.click()
         await node('5.1.2').waitFor()
+        assert.equal(await page.locator('.outline-tab .topic:has(> [data-num="5"])').getAttribute('data-diff'), 'added')
+        assert.match(await bar('5').textContent(), /Added, with 3 nodes under it/)
+        // Nothing in it can be picked before it is accepted.
+        assert.equal(await node('5.1.1').locator('[data-pick]').getAttribute('aria-disabled'), 'true')
+        await accept('5').click()
+        await bar('5').waitFor({ state: 'detached' })
         assert.equal(await page.locator('.outline-tab .env').count(), 0)
         assert.equal(await page.locator('[data-unread]').count(), 0)
+        assert.equal(await node('5.1.1').locator('[data-pick]').getAttribute('aria-disabled'), 'false')
     })
 
-    test('a task whose change is not opened shows no button to run it: what there is to run has not been read', async () => {
-        await open({ reducedMotion: 'reduce' })
+    test('a task whose change is not accepted shows no button to run it: what there is to run has not been read', async () => {
+        await open()
         await firstVisit()
         assert.equal(await node('2.4').locator('[data-run]').count(), 1)
         rewrite(text => text.replace(/(## 2\.4 @action Measure the hit rate on staging\n)/, '$1\nOn production instead.\n'))
         await node('2.4').locator('> .env').waitFor()
         assert.equal(await node('2.4').locator('[data-run]').count(), 0)
         await node('2.4').locator('> .env').click()
+        await bar('2.4').waitFor()
+        assert.equal(await node('2.4').locator('[data-run]').count(), 0)
+        await accept('2.4').click()
         await node('2.4').locator('[data-run]').waitFor()
         assert.match(await text('2.4'), /On production instead\./)
     })
 
-    test('a task the agent carried out collapses once its diff has been shown, also one the viewer had collapsed', async () => {
-        await open({ reducedMotion: 'reduce' })
+    test('a task the agent carried out collapses once its change is accepted, also one the viewer had collapsed', async () => {
+        await open()
         await firstVisit()
         rewrite(text => text.replace(/(## 2\.4 @action Measure the hit rate on staging\n)/, '$1\nOn production instead.\n'))
         await node('2.4').locator('> .env').click()
+        await accept('2.4').click()
         await node('2.4').locator('[data-run]').waitFor()
         // The viewer closes it: from now on the diff has to open it again to be shown.
         await node('2.4').locator('.node-title').click()
         assert.equal(await node('2.4').getAttribute('aria-expanded'), 'false')
         rewrite(text => text.replace('## 2.4 @action Measure', '## 2.4 @action @ran Measure').replace('On production instead.', 'Hit rate was 91%.'))
         await node('2.4').locator('> .env').click()
-        await page.waitForFunction(() => /Hit rate was 91%/.test(document.querySelector('.outline-tab [data-num="2.4"] .node-html')?.textContent ?? ''))
-        // After the pause that lets the diff be read it closes by itself, and the viewer can open it again. Nothing is
-        // open under topic 2 any more, so that closes too: the viewer opens it to see the row.
+        await page.waitForFunction(() => [...document.querySelectorAll('.outline-tab [data-num="2.4"] .node-html ins')].some(e => e.textContent === 'Hit rate was 91%.'))
+        assert.match(await bar('2.4').textContent(), /now done/)
+        // It stays open while its diff is shown.
+        await new Promise(r => setTimeout(r, 1000))
+        assert.equal(await node('2.4').getAttribute('aria-expanded'), 'true')
+        await accept('2.4').click()
+        // After a pause it closes by itself, and the viewer can open it again. Nothing is open under topic 2 any more,
+        // so that closes too: the viewer opens it to see the row.
         await page.waitForFunction(() => document.querySelector('.outline-tab [data-num="2.4"]')?.getAttribute('aria-expanded') === 'false')
         await node('2.4').locator('.node-title').waitFor({ state: 'hidden' })
         await node('2').locator('.node-title').click()
@@ -211,14 +265,25 @@ describe('unread changes', () => {
         await until(async () => !('2.5' in (await readState())), { what: 'the last number to be forgotten' })
     })
 
-    test('the diff button shows the new text (reduced motion: at once)', async () => {
-        await open({ reducedMotion: 'reduce' })
+    test('the diff view marks the words that went and the words that came; accepting takes in the new text', async () => {
+        await open()
         await firstVisit()
         server.swap('demo/sample', 'demo/sample-edited')
         await node('2.3').locator('> .env').waitFor()
-        await node('2.3').locator('> .env').evaluate(e => e.scrollIntoView({ block: 'center' }))
         await node('2.3').locator('> .env').click()
-        await page.waitForFunction(() => /and the tenant/.test(document.querySelector('.outline-tab [data-num="2.3"] .node-html').textContent))
+        await bar('2.3').waitFor()
+        const html = node('2.3').locator('.node-html')
+        const marked = sel => html.locator(sel).evaluateAll(els => els.map(e => e.textContent.trim()))
+        // Struck through where they stood, before the words that took their place.
+        assert.deepEqual(await marked('del.dx-del'), ['index version.', 'index version.', 'the locale has to be'])
+        assert.deepEqual(await marked('ins.dx-add'), ['tenant.', 'tenant.', 'tenant as well as by', 'both are'])
+        assert.match(await text('2.3'), /Results differ by tenant as well as by locale, so the locale has to be both are part of it\./)
+        assert.match(await node('2.3').locator('.closing').first().textContent(), /the locale and the index version\.\s*tenant\./)
+        // Nothing is taken in until it is accepted.
+        assert.match((await readState())['2.3'], /and the index version/)
+        await accept('2.3').click()
+        await bar('2.3').waitFor({ state: 'detached' })
+        assert.doesNotMatch(await html.innerHTML(), /dx-/)
         assert.match(await text('2.3'), /Results differ by tenant as well as by locale/)
         assert.match(await node('2.3').locator('.closing').first().textContent(), /the locale and the tenant/)
         assert.equal(await node('2.3').locator('> .env').count(), 0)
@@ -227,58 +292,41 @@ describe('unread changes', () => {
         assert.match((await readState())['2.3'], /and the tenant/)
     })
 
-    test('the animation ends with exactly the new text', async () => {
+    test('the diff button of a node whose diff is shown hides it again: the node reads as it was read', async () => {
         await open()
         await firstVisit()
         server.swap('demo/sample', 'demo/sample-edited')
-        await node('2.3').locator('> .env').waitFor()
-        await node('2.3').locator('> .env').evaluate(e => e.scrollIntoView({ block: 'center' }))
-        await node('2.3').locator('> .env').click()
-        // The cursor passes through the text, then leaves.
-        await page.locator('.tx-cur').waitFor({ state: 'attached' })
-        await page.locator('.tx-cur').waitFor({ state: 'detached', timeout: 10000 })
-        const html = await node('2.3').locator('.node-html').innerHTML()
-        assert.doesNotMatch(html, /tx-/)
-        assert.match(html, /Results differ by tenant as well as by locale/)
-        assert.equal(await node('2.3').locator('> .env').count(), 0)
+        const button = node('2.3').locator('> .env')
+        await button.click()
+        await bar('2.3').waitFor()
+        assert.equal(await button.getAttribute('aria-pressed'), 'true')
+        await button.click()
+        await bar('2.3').waitFor({ state: 'detached' })
+        assert.equal(await button.getAttribute('aria-pressed'), 'false')
+        assert.match(await text('2.3'), /and the index version/)
+        assert.doesNotMatch(await node('2.3').locator('.node-html').innerHTML(), /dx-/)
+        assert.match((await readState())['2.3'], /and the index version/)
     })
 
-    test('each stage of the animation takes half a second, however long the text', async () => {
-        // A node of two hundred words, then the same with every fifth word rewritten and a sentence added.
-        const file = path.join(server.dir, 'demo', 'sample.md')
-        const long = Array.from({ length: 200 }, (_, i) => `word${i}`)
-        const withText = words => fs.readFileSync(path.join(FIXTURES, 'outlines/demo/sample.md'), 'utf8').replace('## 3.3 Who can flush the cache by hand\n', `## 3.3 Who can flush the cache by hand\n\n${words.join(' ')}\n`)
-        fs.writeFileSync(file, withText(long))
+    test('a list in the text is compared item by item: an item that went is struck through, one that came is green', async () => {
         await open()
         await firstVisit()
-        await page.waitForFunction(() => /word199/.test(document.querySelector('.outline-tab [data-num="3.3"] .node-html').textContent))
-        fs.writeFileSync(file, withText([...long.map((w, i) => (i % 5 ? w : `changed${i}`)), 'and', 'a', 'new', 'closing', 'sentence.']))
-        const button = node('3.3').locator('> .env')
-        await button.waitFor()
-        await button.evaluate(e => e.scrollIntoView({ block: 'center' }))
-        // From the cursor showing up to its leaving.
-        await page.evaluate(() => {
-            const seen = (window.tx = {})
-            new MutationObserver(() => {
-                const cursor = document.querySelector('.tx-cur')
-                if (cursor) seen.from ??= performance.now()
-                else if (seen.from) seen.to ??= performance.now()
-            }).observe(document.body, { childList: true })
-        })
-        await button.click()
-        // First the rewritten words are marked, in orange, and nothing has come in yet.
-        await page.locator('.tx-o.c .tx-u').first().waitFor()
-        assert.equal(await node('3.3').locator('.tx-n .tx-u.on').count(), 0)
-        assert.match(await node('3.3').locator('.node-html').evaluate(e => e.innerText), /^word0 word1 /)
-        const took = await (await page.waitForFunction(() => window.tx.to && window.tx.to - window.tx.from, null, { timeout: 10000 })).jsonValue()
-        // Three stages here (the marks, the rewritten words, the added ones), then the last colour fading and the
-        // cursor leaving: 1880 ms, with some room for a busy machine.
-        assert.ok(took > 1700 && took < 2300, `the animation took ${Math.round(took)} ms`)
-        assert.match(await text('3.3'), /changed195 word196.*a new closing sentence\./)
-        assert.doesNotMatch(await node('3.3').locator('.node-html').innerHTML(), /tx-/)
+        rewrite(text => text.replace('## 3.3 Who can flush the cache by hand\n', '## 3.3 Who can flush the cache by hand\n\n- Operators\n- Support\n'))
+        await node('3.3').locator('> .env').click()
+        await accept('3.3').click()
+        await bar('3.3').waitFor({ state: 'detached' })
+        rewrite(text => text.replace('- Operators\n- Support\n', '- On-call engineers\n- Operators\n'))
+        await node('3.3').locator('> .env').click()
+        await bar('3.3').waitFor()
+        const items = await node('3.3').locator('.node-html li').evaluateAll(els => els.map(e => [e.className, e.textContent.trim()]))
+        assert.deepEqual(items, [
+            ['dx-add-block', 'On-call engineers'],
+            ['', 'Operators'],
+            ['dx-del-block', 'Support'],
+        ])
     })
 
-    test('a parent’s hover button opens every change under it, and the parent stays where it is', async () => {
+    test('a parent’s hover button shows every change under it in the diff view, and the parent stays where it is', async () => {
         await open()
         await firstVisit()
         server.swap('demo/sample', 'demo/sample-edited')
@@ -293,17 +341,17 @@ describe('unread changes', () => {
         const button = head.locator('.ask-diff')
         assert.equal(await button.getAttribute('data-unread-under'), '1')
         await button.click()
-        await node('2.3').locator('> .env').waitFor({ state: 'detached' })
-        await page.waitForFunction(() => !document.querySelector('.tx-cur'))
+        await bar('2.3').waitFor()
         assert.match(await text('2.3'), /Results differ by tenant as well as by locale/)
-        assert.equal(await node('2.3').locator('> .env').count(), 0)
         assert.equal(await head.locator('.ask-diff').count(), 0)
         const topAfter = await head.evaluate(e => e.getBoundingClientRect().top)
         assert.ok(Math.abs(topAfter - topBefore) < 1, `the parent moved from ${topBefore} to ${topAfter}`)
-        assert.match((await readState())['2.3'], /and the tenant/)
+        await bar('2').locator('[data-accept-all]').click()
+        await until(async () => /and the tenant/.test((await readState())['2.3']), { what: 'the change to be taken in' })
+        assert.equal(await node('2.3').locator('> .env').count(), 0)
     })
 
-    test('a collapsed parent’s hover button takes in its changes at once', async () => {
+    test('a collapsed parent’s hover button opens it on its changes', async () => {
         await open()
         await firstVisit()
         server.swap('demo/sample', 'demo/sample-edited')
@@ -312,9 +360,10 @@ describe('unread changes', () => {
         await node('2.3').waitFor({ state: 'hidden' })
         await node('2').hover()
         await node('2').locator('.ask-diff').click()
-        await until(async () => /and the tenant/.test((await readState())['2.3']), { what: 'the change to be taken in' })
-        // Nothing was opened that the viewer had collapsed.
-        assert.equal(await node('2.3').isVisible(), false)
+        await bar('2.3').waitFor()
+        assert.equal(await node('2.3').isVisible(), true)
+        // Nothing is taken in until it is accepted.
+        assert.match((await readState())['2.3'], /and the index version/)
     })
 
     test('what was read survives a reload', async () => {
@@ -336,8 +385,9 @@ describe('unread changes', () => {
         await page.locator('[aria-label="Your queue"] [data-queue="2.3"]').click()
         await page.waitForFunction(() => document.querySelector('.outline-tab [data-num="2.3"] > .env')?.hasAttribute('data-pulse'))
         assert.equal(await node('2.3').isVisible(), true)
-        // It only shows the node: the change is still unread.
+        // It only shows the node: the change is still unread, and its diff not open.
         assert.match(await text('2.3'), /and the index version/)
+        assert.equal(await bar('2.3').count(), 0)
     })
 })
 
@@ -384,7 +434,7 @@ describe('removed nodes, and the order of the changes, in server mode', () => {
     const rows = () =>
         page.locator('.outline-tab .topic:has(> [data-num="2"]) > .topic-body > .nodes').evaluate(list => [...list.children].map(el => (el.matches('[data-removed]') ? `-${el.querySelector('s').textContent}` : (el.dataset.num ?? el.querySelector('[data-num]').dataset.num))))
 
-    test('a node the agent takes out stays where it stood, struck through with a minus, until the minus is clicked', async () => {
+    test('a node the agent takes out stays where it stood, struck through with a minus, until its removal is accepted', async () => {
         const title = await node('2.4').locator('.title-html').textContent()
         await change([{ op: 'remove', num: '2.3' }])
         const row = page.locator('.outline-tab [data-removed]')
@@ -400,8 +450,10 @@ describe('removed nodes, and the order of the changes, in server mode', () => {
         assert.equal((await indicator.textContent()).trim(), '2.3')
         await indicator.click()
         await page.waitForFunction(() => document.querySelector('.outline-tab [data-removed] > .env')?.hasAttribute('data-pulse'))
-        // The minus lets it go, for good.
+        // The minus shows it in the diff view, in red; accepting lets it go, for good.
         await row.locator('> .env').click()
+        assert.equal(await row.getAttribute('data-diff'), 'removed')
+        await row.locator('[data-accept]').click()
         await row.waitFor({ state: 'detached' })
         assert.equal(await indicator.count(), 0)
         assert.deepEqual(await rows(), ['2.1', '2.2', '2.3', '2.4'])
@@ -416,14 +468,16 @@ describe('removed nodes, and the order of the changes, in server mode', () => {
         await row.waitFor()
         assert.equal(await row.count(), 1)
         assert.match(await row.textContent(), /Events that drop entries\s+and 4 under it/)
-        // Collapsed, topic 3 says something waits under it, and a click on its button opens that too.
+        // Collapsed, topic 3 says something waits under it, and a click on its button shows that too.
         await node('3').click()
         const button = node('3').locator('> .env')
         await button.waitFor()
         assert.match(await button.getAttribute('title'), /^1 change under this node/)
         await button.click()
+        await page.locator('.outline-tab [data-removed][data-diff="removed"]').waitFor()
+        assert.match(await page.locator('.outline-tab [data-diff-bar="3"]').textContent(), /1 change under this node/)
+        await page.locator('.outline-tab [data-diff-bar="3"] [data-accept-all]').click()
         await page.locator('[data-removed-item]').waitFor({ state: 'detached' })
-        await node('3').click()
         assert.equal(await page.locator('.outline-tab [data-removed]').count(), 0)
     })
 

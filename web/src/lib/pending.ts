@@ -14,20 +14,22 @@ export interface PendingChange {
 }
 
 /**
- * The outline as the viewer sees it while changes wait to be opened: the tree does not change by itself.
+ * The outline as the viewer sees it while changes wait to be accepted: the tree does not change by itself.
  *
  * A changed node keeps the kind it had when they read it (its agent-side tags and its closing lines), so its kind
  * marks, and those rolled up on its parents, are the old ones; its title and text are shown from what was read. The
  * user's own approval is not held back: it is theirs, and applies at once.
  *
- * An added node is there as a bare row: its title, and nothing of its text, its kind or the nodes under it.
+ * An added node is there as a bare row: its title, and nothing of its text, its kind or the nodes under it. Once the
+ * viewer opened its diff (`reviewing`) it is there whole, everything under it included, to be read before it is accepted.
  */
-export function shownNodes(nodes: OutlineNode[], pending: ReadonlyMap<string, PendingChange>): OutlineNode[] {
+export function shownNodes(nodes: OutlineNode[], pending: ReadonlyMap<string, PendingChange>, reviewing: Pick<ReadonlySet<string>, 'has'> = new Set()): OutlineNode[] {
     if (!pending.size) return nodes
     const shown = nodes.map((node): OutlineNode => {
         const change = pending.get(node.num)
-        if (change?.kind === 'added') return { ...node, tags: node.tags.filter(t => t === 'current' || t === 'option'), status: 'open', html: '', closing: [], children: [] }
-        const children = shownNodes(node.children, pending)
+        if (change?.kind === 'added')
+            return reviewing.has(node.num) ? node : { ...node, tags: node.tags.filter(t => t === 'current' || t === 'option'), status: 'open', html: '', closing: [], children: [] }
+        const children = shownNodes(node.children, pending, reviewing)
         const kind = change?.kind === 'changed' ? change.was?.kind : undefined
         if (!kind) return children === node.children ? node : { ...node, children }
         const claim = kind.tags.includes('claim') || kind.tags.includes('recommended') || kind.closing.includes('recommendation')

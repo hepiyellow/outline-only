@@ -136,15 +136,23 @@ The pending actions of an outline, in order, queue for short. In server mode the
 _Avoid_: Task queue, tasks (those are the agent's), to-do, cue
 
 **Pending change**:
-A change the agent made to a node that the page holds back until the user opens it, so that the outline does not change under them. A node that was reworded, or whose kind changed, keeps what the user read; a node that was added is a bare row; a node that was removed stays where it stood, struck through, while the nodes after it carry their new numbers. Opening a node's pending change opens every one under it. What the user does is never one: their approval or pick applies at once. Nothing is pending on a first visit.
+A change the agent made to a node that the page holds back until the user accepts it, so that the outline does not change under them. A node that was reworded, or whose kind changed, keeps what the user read; a node that was added is a bare row; a node that was removed stays where it stood, struck through, while the nodes after it carry their new numbers. The node's diff icon shows it in the diff view, with every pending change under the node. What the user does is never one: their approval or pick applies at once. Nothing is pending on a first visit.
 _Avoid_: Update, unread (the code's word), diff (that is the icon), and a bare "pending"
 
+**Diff view**:
+How the page shows pending changes once the user clicked a diff icon, the way a code diff does: a reworded node's title and text as they are now, with the words that went struck through in red where they stood and the words that came in green (a whole paragraph or list item that went or came is marked as one); an added node whole, in green; a removed node's row in red. A kind that changed is said in words: its new kind mark comes once the change is accepted. Nothing in it moves. Each change has its own Accept; the node whose icon was clicked can also accept every change shown under it at once, or hide the diff, which leaves the changes pending. A node in it takes no approval, pick or run until its change is accepted.
+_Avoid_: Animation, preview, review (the code's word)
+
+**Accept**:
+What the user does to a pending change in the diff view: the node then reads as it is now, a removed node goes, and a kind mark held back turns. It says the user has seen the change, not that they concur with it, which is what an approval says.
+_Avoid_: Approve (that is the user's tick on a node), open (that shows the diff), keep
+
 **Diff icon**:
-The one icon left of a node's title: it says the node has a pending change, and a click opens it. A plus over a minus for a node that changed, a plus for one that was added, a minus for one that was removed. A closed parent shows it for the pending changes under it.
+The one icon left of a node's title: it says the node has a pending change, and a click shows it in the diff view; on a node whose diff is shown, a click hides it again. A plus over a minus for a node that changed, a plus for one that was added, a minus for one that was removed. A closed parent shows it for the pending changes under it.
 _Avoid_: Envelope, unread mark
 
 **Change indicator**:
-What shows the user where a pending change is, without opening it: an item of the lower queue of the page's column, under the action queue. It is drawn with what opening the change brings: the node's new kind mark, or else the diff icon in the form the node has. The page lists them, as the outline is ordered or the oldest change first, as the user chooses; no agent orders them. A node that has an item in the action queue has none: that item leads to the same node.
+What shows the user where a pending change is, without opening it: an item of the lower queue of the page's column, under the action queue. It is drawn with what accepting the change brings: the node's new kind mark, or else the diff icon in the form the node has. The page lists them, as the outline is ordered or the oldest change first, as the user chooses; no agent orders them. A node that has an item in the action queue has none: that item leads to the same node.
 _Avoid_: Notice, update message (a message is a note in the inbox), notification
 
 **Action indicator**:

@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { drawTree, transitionTree } from '@/lib/historyTree'
+import { contentHtml } from '@/lib/content'
 import type { HistoryEntry, OutlineNode } from '@/types'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog'
 
@@ -20,30 +20,24 @@ const didText = ({ what, kind }: NonNullable<HistoryEntry['did']>[number]) =>
 
 const when = (at: number) => new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
-/**
- * A node's state at one entry, its children included. Switching entries takes the tree from the one to the other, a
- * node at a time (lib/historyTree.ts); switching again meanwhile takes in the change under way at once, then starts the new one.
- */
+/** A node's state at one entry, its children included. */
 function HistoryTree({ nodes }: { nodes: OutlineNode[] }) {
-    const ref = useRef<HTMLDivElement>(null)
-    const run = useRef<{ stop: AbortController; done: Promise<void>; nodes: OutlineNode[] }>(undefined)
-    useLayoutEffect(() => {
-        const root = ref.current
-        if (!root) return
-        const before = run.current
-        const stop = new AbortController()
-        before?.stop.abort()
-        const done = (async () => {
-            if (before) {
-                await before.done
-                drawTree(root, before.nodes)
-            }
-            if (!stop.signal.aborted) await transitionTree(root, nodes, stop.signal)
-        })().catch(e => console.error(e))
-        run.current = { stop, done, nodes }
-    }, [nodes])
-    useEffect(() => () => run.current?.stop.abort(), [])
-    return <div ref={ref} className="hist-tree" />
+    return (
+        <>
+            {nodes.map(n => (
+                <div key={n.num} className="hist-node" data-hnum={n.num}>
+                    <div className="hist-head">
+                        <span className="num">{n.num}</span>
+                        <span className="title-html" dangerouslySetInnerHTML={{ __html: n.titleHtml }} />
+                    </div>
+                    <div className="hist-body node-html" dangerouslySetInnerHTML={{ __html: contentHtml(n) }} />
+                    <div className="hist-kids">
+                        <HistoryTree nodes={n.children} />
+                    </div>
+                </div>
+            ))}
+        </>
+    )
 }
 
 /**
@@ -107,7 +101,11 @@ export function NodeHistory({ project, file, node, bottom, onClose }: { project:
                         {!entries && !error && <p className="text-[13px] text-muted-foreground">Loading…</p>}
                         {error && <p className="text-[13px] text-danger">{error}</p>}
                         {entries && !entries.length && <p className="text-[13px] text-muted-foreground">No changes recorded yet.</p>}
-                        {entry && <HistoryTree nodes={[entry.node]} />}
+                        {entry && (
+                            <div className="hist-tree">
+                                <HistoryTree nodes={[entry.node]} />
+                            </div>
+                        )}
                     </div>
                 </div>
             </DialogContent>

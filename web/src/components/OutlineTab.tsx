@@ -38,13 +38,20 @@ export type NodeActions = Pick<
     | 'onRemove'
     | 'pending'
     | 'unread'
-    | 'opening'
+    | 'diffs'
+    | 'reviewing'
+    | 'roots'
+    | 'diffsAt'
+    | 'held'
+    | 'addedIn'
+    | 'kindChangeOf'
     | 'onOpenChange'
+    | 'onAccept'
+    | 'onHide'
     | 'removedIn'
     | 'removedUnder'
-    | 'onSeenRemoved'
+    | 'onReviewRemoved'
     | 'unreadUnder'
-    | 'onOpenUnreadUnder'
     | 'messagesFor'
     | 'seen'
     | 'onSeen'
@@ -73,17 +80,14 @@ const EMPTY = {
 export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props) {
     const root = useRef<HTMLDivElement>(null)
     const [historyOf, setHistoryOf] = useState<OutlineNode | null>(null)
-    // The changes that wait. One being opened no longer does: its marks turn as the animation starts.
+    // The changes that wait, in the diff view or not: their marks turn when they are accepted.
     const unopened = useMemo(() => new Set(actions.pending.keys()), [actions.pending])
-    // The kind marks that changed as a change was opened.
+    // The kind marks that changed as a change was accepted.
     const [pulse, setPulse] = useState<Map<string, MarksChange>>(new Map())
     const ctx = useMemo<OutlineContext>(() => {
         // The marks are those of the outline as it is shown: a node whose change waits keeps the kind it was read with.
         const statuses = new Statuses(shown, viewer.overrides, outline.mode, new Set(outline.unacked), unopened)
-        const openByState = isOpenIn(viewer.open, statuses)
-        // A parent stays open while a change under it is being opened: the change may settle the parent, and a
-        // settled parent closes, which would hide the change as it is shown.
-        const isOpen = (node: OutlineNode) => [...actions.opening].some(num => num.startsWith(`${node.num}.`)) || openByState(node)
+        const isOpen = isOpenIn(viewer.open, statuses)
         return {
             ...actions,
             onHistory: setHistoryOf,
@@ -104,8 +108,8 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
         }
     }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle])
 
-    // Opening a change turns the marks it held back: each one that differs from before grows and shrinks once. What it
-    // was is the outline as it was shown with the change still unopened, so only the click makes a difference.
+    // Accepting a change turns the marks it held back: each one that differs from before grows and shrinks once. What
+    // it was is the outline as it was shown with the change not accepted, so only the click makes a difference.
     const prevUnopened = useRef<Set<string> | null>(null)
     const prevStatuses = useRef<Statuses | null>(null)
     const pulseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -132,13 +136,13 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
 
     // A parent that becomes settled collapses, also one the viewer had opened themselves: such a parent would stay
     // open by their choice, so it is closed here. After a pause, since a click that settles a parent closes it itself,
-    // with its own animation. A task that becomes done does too, once its diff has been shown (the node is read with
-    // its old tags until then): opening the diff of a collapsed task pins it open for the animation. A failed task
-    // stays, since it can be run again.
+    // with its own animation. A task that becomes done does too, once its change is accepted (the node is read with
+    // its old tags until then). A failed task stays, since it can be run again, and so does a node with a change in
+    // the diff view at it or under it: it is being read.
     const settled = useRef<Set<string> | null>(null)
-    const latest = useRef({ shown, open: viewer.open, statuses: ctx.statuses, onToggle })
-    latest.current = { shown, open: viewer.open, statuses: ctx.statuses, onToggle }
-    // The pauses run on, whatever the outline does meanwhile: opening a diff changes the statuses again at once, which
+    const latest = useRef({ shown, open: viewer.open, statuses: ctx.statuses, onToggle, diffsAt: actions.diffsAt })
+    latest.current = { shown, open: viewer.open, statuses: ctx.statuses, onToggle, diffsAt: actions.diffsAt }
+    // The pauses run on, whatever the outline does meanwhile: accepting a change alters the statuses again at once, which
     // would clear a pause that a re-run of the effect below owned. What is open and settled is read when one ends.
     const settleTimers = useRef(new Set<ReturnType<typeof setTimeout>>())
     useEffect(() => () => settleTimers.current.forEach(clearTimeout), [])
@@ -152,8 +156,8 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
         if (!turned.length) return
         const timer = setTimeout(() => {
             settleTimers.current.delete(timer)
-            const { shown, open, statuses, onToggle } = latest.current
-            for (const n of allNodes(shown)) if (turned.includes(n.num) && open[n.num] && finished(n, statuses)) onToggle(n, false)
+            const { shown, open, statuses, onToggle, diffsAt } = latest.current
+            for (const n of allNodes(shown)) if (turned.includes(n.num) && open[n.num] && finished(n, statuses) && !diffsAt(n.num).length) onToggle(n, false)
         }, SETTLE_PAUSE)
         settleTimers.current.add(timer)
         // Only a change of what is settled matters: the viewer opening a node is not one.

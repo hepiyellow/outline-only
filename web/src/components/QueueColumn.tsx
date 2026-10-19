@@ -89,7 +89,7 @@ function EntryButton({ entry: e }: { entry: Entry }) {
  * its node. It is always shown in full; past the window's height the column scrolls.
  *
  * Below, the change indicators: one for each change the viewer has not opened, in outline order or, by the button on
- * the divider, the oldest change first. It is drawn with what opening the change brings: the node's new kind mark
+ * the divider, the oldest change first. It is drawn with what accepting the change brings: the node's new kind mark
  * when that changes, a plus over a minus when only its wording does, a plus for a node that was added, a minus for
  * one that was removed. A node that has an action item shows once, among the actions: the item
  * leads to the same row, where the diff button is. The indicators get the room that is left; those that do not fit
