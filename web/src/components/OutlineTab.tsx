@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { UNTITLED, allNodes, currentPath } from '@/lib/outline'
+import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
 import { cn } from '@/lib/utils'
@@ -105,6 +105,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
             toggle: node => onToggle(node, !isOpen(node)),
             current: currentPath(shown),
             runs: viewer.runs,
+            links: linksByNum(outline.nodes),
         }
     }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle])
 

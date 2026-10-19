@@ -30,8 +30,14 @@ const NODE = {
     },
     status: { enum: ['open', 'claim'], description: 'claim: settled in the conversation, or something you are certain of. Never set for what still needs the user.' },
     ask: { type: 'boolean', description: 'true asks the user to approve this node: while it is a claim they have not approved, it is a pending action in the queue. Not for a task or an option.' },
+    links: {
+        type: 'array',
+        items: text,
+        description:
+            'The nodes this one comes from, by number (2.1): the decisions a plan item carries out, the plan item a task carries out, the task a check checks. A link points upstream and never closes a loop; the server keeps it through every renumbering. update: the whole list ([] clears it).',
+    },
 }
-const OPTION = { type: 'object', properties: { title: NODE.title, text: NODE.text, recommended: { type: 'boolean' }, task: NODE.task }, required: ['title'] }
+const OPTION = { type: 'object', properties: { title: NODE.title, text: NODE.text, recommended: { type: 'boolean' }, task: NODE.task, links: NODE.links }, required: ['title'] }
 
 const TOOLS = [
     {
@@ -59,10 +65,10 @@ const TOOLS = [
         description: [
             'Change the outline: a list of operations applied together, all or none. Make one call per turn, after your answer is decided. The result carries what the user did on the page since you were last told, and a map of the outline.',
             'Operations (op):',
-            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat.',
-            '- update { num, title?, text?, summary?, recommendation?, task?, status?, ask?, recommended? }: each field given replaces that whole field ("" clears it), so write the full new text.',
+            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, links?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat. links names the nodes it comes from.',
+            '- update { num, title?, text?, summary?, recommendation?, task?, status?, ask?, recommended?, links? }: each field given replaces that whole field ("" clears it), so write the full new text.',
             '- move { num, under }: puts a node under another parent ("" for the top level), where it takes the next number.',
-            '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered.',
+            '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered, and a link to a node taken out is dropped.',
             '- record { num, decision }: what the user decided in chat. approve, reopen, or pick (num is the option). Only what the user said, never your own judgment.',
             '- finish { num, outcome, failed? }: you carried out what the node describes, so it shows as a task done; outcome says what happened. The node is a task the user ran, or any node about something the user asked you in chat to do.',
             '- acknowledge {}: you took in the ticks the user made on the page and nothing in the outline follows from them. Any change made after you were told of a tick acknowledges it, so send this only in a change that holds nothing else.',

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { HEAD_RE, OPTION_RE, TAG_RE, TRAIL_MARK, extractHeaders } from './outline.js'
+import { HEAD_RE, OPTION_RE, TAG_RE, TRAIL_MARK, VALUE_TAG, extractHeaders } from './outline.js'
 
 // The outline as the server owns it (docs/adr/0003): the markdown file read into nodes, the operations an agent's
 // `change` and the user's clicks apply to them, the rules the server keeps on its own (numbers, roll-up, the current
@@ -35,7 +35,7 @@ function walkLines(lines, each) {
 const HEADING = /^(#{1,6}) +(.*)$/
 
 function blankNode(level) {
-    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', text: '', summary: '', recommendation: '', taskLine: '', children: [] }
+    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], text: '', summary: '', recommendation: '', taskLine: '', children: [] }
 }
 
 /** A heading line's number, tags and title, as a node without text. */
@@ -47,7 +47,10 @@ function headingNode(content, level) {
     for (let t; (t = rest.match(TAG_RE)); rest = rest.slice(t[0].length)) {
         const name = t[1].toLowerCase()
         const letter = name.match(OPTION_RE)
-        if (letter) node.option = letter[1].toUpperCase()
+        const value = name.match(VALUE_TAG)
+        if (value?.[1] === 'id') node.id = value[2]
+        else if (value?.[1] === 'links') node.links = value[2].split(',').filter(Boolean)
+        else if (letter) node.option = letter[1].toUpperCase()
         else if (name === 'user-approved' || name === 'approved') node.approved = true
         else if (name === 'agent-claim' || name === 'claim') node.claim = true
         else if (name === 'asks-approval') node.asks = true
@@ -142,6 +145,8 @@ function headingLine(node) {
         node.task === 'proposed' && '@task',
         node.task === 'done' && '@task-done',
         node.task === 'failed' && '@task-failed',
+        node.id && `@id:${node.id}`,
+        node.links.length && `@links:${node.links.join(',')}`,
     ].filter(Boolean)
     const num = node.num ? `${node.num}${node.level === 1 ? '.' : ''}` : ''
     return `${'#'.repeat(node.level)} ${[num, ...tags, node.title].filter(Boolean).join(' ')}`
@@ -199,6 +204,60 @@ function indexOf(model) {
 
 export const findNode = (model, num) => indexOf(model).get(num)?.node
 
+/** Every node that has an id, by its id. */
+function byId(model) {
+    const ids = new Map()
+    for (const n of allNodes(model.nodes)) if (n.id) ids.set(n.id, n)
+    return ids
+}
+
+/** An id: six letters and digits, at least one of them a letter, so that it never reads as a node number. */
+const ID_RE = /^(?=[0-9]*[a-z])[a-z0-9]{6}$/
+const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+/** A new id that no node of the outline has. */
+function newId(taken) {
+    for (;;) {
+        const id = [...crypto.randomBytes(6)].map(b => ID_CHARS[b % ID_CHARS.length]).join('')
+        if (ID_RE.test(id) && !taken.has(id)) return id
+    }
+}
+
+/**
+ * The node's id, given now when it has none. A node gets its id the first time a link points at it: one nothing links
+ * to needs none, so an outline without links is written as it was. Once given, an id stays with the node through
+ * every move, removal and renumbering.
+ */
+function idOf(model, node) {
+    node.id ||= newId(byId(model))
+    return node.id
+}
+
+/** The nodes a node comes from, by its links, as they are now. */
+export function linkedFrom(model, node, ids = byId(model)) {
+    return node.links.map(id => ids.get(id)).filter(Boolean)
+}
+
+/** The nodes that come from a node: those whose links hold its id. */
+export function linkedTo(model, node) {
+    return node.id ? allNodes(model.nodes).filter(n => n.links.includes(node.id)) : []
+}
+
+/** Whether following links upstream from the node with id `from` reaches the one with id `to`. */
+function reaches(ids, from, to, seen = new Set()) {
+    if (from === to) return true
+    if (seen.has(from)) return false
+    seen.add(from)
+    return (ids.get(from)?.links ?? []).some(id => reaches(ids, id, to, seen))
+}
+
+/** A node's links as the agent reads them: the numbers of the nodes it comes from, and of those that come from it. */
+function linkLine(model, node) {
+    const from = linkedFrom(model, node).map(n => n.num)
+    const to = linkedTo(model, node).map(n => n.num)
+    return [from.length && `from ${from.join(', ')}`, to.length && `used by ${to.join(', ')}`].filter(Boolean).join('; ')
+}
+
 /** A question with its options under it (as outline.js `isQuestion`). */
 export const isQuestion = node => node.children.length > 0 && (node.question || node.children.some(c => c.option))
 
@@ -250,6 +309,7 @@ const MAP_ALL = 80
  */
 export function mapText(model, around = []) {
     const index = indexOf(model)
+    const ids = byId(model)
     const total = allNodes(model.nodes).length
     const shown = new Set()
     if (total > MAP_ALL) {
@@ -269,7 +329,8 @@ export function mapText(model, around = []) {
                 hidden += allNodes([n]).length
                 continue
             }
-            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent)}]${n.current ? ' <- current' : ''}`)
+            const from = linkedFrom(model, n, ids).map(l => l.num)
+            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent)}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
             walk(n.children, n, depth + 1)
         }
         if (hidden) lines.push(`${'  '.repeat(depth)}… ${hidden} more under ${parent.num} (read ${parent.num} to see them)`)
@@ -278,9 +339,11 @@ export function mapText(model, around = []) {
     return lines.join('\n')
 }
 
-/** One node in full, as `read` returns it. */
-function nodeText(node, parent) {
+/** One node in full, as `read` returns it, with its links by the numbers the nodes have now. */
+function nodeText(model, node, parent) {
     const lines = [`${label(node)} [${describe(node, parent)}]`]
+    const links = linkLine(model, node)
+    if (links) lines.push(`Links: ${links}`)
     if (node.text) lines.push(node.text)
     if (node.summary) lines.push(`Summary: ${node.summary}`)
     if (node.recommendation) lines.push(`Recommendation: ${node.recommendation}`)
@@ -298,7 +361,7 @@ export function readText(model, num = '') {
     const walk = (nodes, parent) =>
         nodes.forEach(n => {
             shown.push(n)
-            blocks.push(nodeText(n, parent))
+            blocks.push(nodeText(model, n, parent))
             walk(n.children, n)
         })
     if (entry) walk([entry.node], entry.parent)
@@ -475,8 +538,34 @@ function checkAsk(value, node, option, where) {
     return value
 }
 
-/** A new node from an `add` (or one of its children, or an option of its question). */
-function buildNode(spec, num, level, option = '') {
+/**
+ * Sets a node's links from what the agent gave: node numbers (or ids), stored as ids. A link names a node the node
+ * comes from, so it may not name the node itself, a node that is not there, or one that already comes from it.
+ */
+function setLinks(model, node, links, where) {
+    if (!Array.isArray(links)) throw new OpError(`The links of ${where} are not a list.`, 'Pass links: ["2.1", …]: the numbers of the nodes it comes from.')
+    const index = indexOf(model)
+    const ids = byId(model)
+    const targets = []
+    for (const ref of links) {
+        const target = isText(ref) && NUM_RE.test(ref) ? index.get(ref)?.node : isText(ref) && ID_RE.test(ref) ? ids.get(ref) : undefined
+        if (!target) throw new OpError(`${where} links to ${JSON.stringify(ref)}, and there is no such node.`, `A link names a node this one comes from, by its number. The nodes are:\n${mapText(model)}`)
+        if (target === node) throw new OpError(`${where} links to itself.`, 'A link names another node: one this node comes from.')
+        if (!targets.includes(target)) targets.push(target)
+    }
+    // Nothing links to a node without an id yet, so a link from it cannot close a loop.
+    if (node.id)
+        for (const target of targets)
+            if (target.links.some(id => reaches(ids, id, node.id)))
+                throw new OpError(
+                    `A link from ${where} to ${target.num} would close a loop: ${target.num} already comes from ${node.num}, through its links.`,
+                    `Links point upstream only, to what a node comes from. Drop this link, or take ${target.num}'s link to ${node.num} away first if it is the one that is wrong.`,
+                )
+    node.links = targets.map(t => idOf(model, t))
+}
+
+/** A new node from an `add` (or one of its children, or an option of its question). `later` collects the links to set once it is in the outline. */
+function buildNode(spec, num, level, option = '', later = []) {
     const where = `node ${num}`
     if (!spec || typeof spec !== 'object') throw new OpError(`${where} is not an object.`)
     if (level > MAX_LEVEL) throw new OpError(`${where} would be ${level} levels deep; nodes nest at most ${MAX_LEVEL}.`, 'Write it as bullets in its parent’s text, or add it higher up.')
@@ -512,16 +601,17 @@ function buildNode(spec, num, level, option = '') {
     if (spec.ask !== undefined) node.asks = checkAsk(spec.ask, node, option, where)
     if (option) node.recommended = !!spec.recommended
     else if (spec.recommended) throw new OpError(`${where} is marked recommended, and it is not an option.`, 'For a recommendation on a node that is not a choice, use the recommendation field.')
+    if (spec.links !== undefined) later.push({ node, links: spec.links, where })
     if (spec.options !== undefined) {
         if (!Array.isArray(spec.options) || spec.options.length < 2) throw new OpError(`The question ${num} needs at least two options.`, 'Give options as a list of { title, text }.')
         if (spec.children?.length) throw new OpError(`The question ${num} has both options and children.`, 'A question’s children are its options.')
         if (spec.options.filter(o => o?.recommended).length > 1) throw new OpError(`The question ${num} recommends more than one option.`, 'Recommend at most one.')
         if (spec.options.length > LETTERS.length) throw new OpError(`The question ${num} has too many options.`)
         node.question = true
-        node.children = spec.options.map((o, i) => buildNode(o, `${num}.${i + 1}`, level + 1, LETTERS[i]))
+        node.children = spec.options.map((o, i) => buildNode(o, `${num}.${i + 1}`, level + 1, LETTERS[i], later))
     } else if (spec.children !== undefined) {
         if (!Array.isArray(spec.children)) throw new OpError(`The children of ${num} are not a list.`)
-        node.children = spec.children.map((c, i) => buildNode(c, `${num}.${i + 1}`, level + 1))
+        node.children = spec.children.map((c, i) => buildNode(c, `${num}.${i + 1}`, level + 1, '', later))
     }
     return node
 }
@@ -597,8 +687,10 @@ export function applyOperations(model, ops, shown = {}) {
             if (op.num !== next) throw new OpError(`${op.num} would skip numbers under ${parentNum || 'the outline'}.`, `The next free number there is ${next}.`)
             const option = parent && isQuestion(parent)
             if (parent && parent.question && !parent.children.length) throw new OpError(`${parentNum} is a question without options.`, 'Add its options as nodes under it.')
-            const node = buildNode(op, op.num, (parent?.level ?? 0) + 1, option ? LETTERS[siblings.length] ?? 'Z' : '')
+            const later = []
+            const node = buildNode(op, op.num, (parent?.level ?? 0) + 1, option ? LETTERS[siblings.length] ?? 'Z' : '', later)
             siblings.push(node)
+            for (const { node: n, links, where } of later) setLinks(model, n, links, where)
             if (option) result.notes.push(`${op.num} is option (${node.option}) of the question ${parentNum}.`)
             for (const n of allNodes([node])) shown[n.num] = nodeHash(n)
             touch(op.num)
@@ -611,7 +703,7 @@ export function applyOperations(model, ops, shown = {}) {
                 const stale = new OpError(
                     `${op.num} changed since you last saw it (or you have not read it since your context was compacted), so the update was not applied.`,
                     'This is the node as it is now. Send the update again if it still holds, keeping what the node has and your change needs.',
-                    nodeText(node, parent),
+                    nodeText(model, node, parent),
                 )
                 stale.num = op.num
                 throw stale
@@ -633,6 +725,7 @@ export function applyOperations(model, ops, shown = {}) {
                 else node.task ||= 'proposed'
             }
             if (op.ask !== undefined) node.asks = checkAsk(op.ask, node, parent && isQuestion(parent), where)
+            if (op.links !== undefined) setLinks(model, node, op.links, where)
             if (op.recommended !== undefined) {
                 if (!parent || !isQuestion(parent)) throw new OpError(`${op.num} is not an option, so it cannot be recommended.`, 'Use the recommendation field for a node that is not a choice.')
                 if (op.recommended) parent.children.forEach(c => (c.recommended = false))
@@ -696,7 +789,15 @@ export function applyOperations(model, ops, shown = {}) {
             for (const num of gone) delete shown[num]
             model.queue = model.queue.filter(item => !gone.includes(item.num))
             result.ordered = result.ordered.filter(num => !gone.includes(num))
+            const goneIds = new Map(allNodes([node]).filter(n => n.id).map(n => [n.id, n.num]))
             renumbered(closeGap(from, parent))
+            // A link to a node that is gone goes with it.
+            for (const n of allNodes(model.nodes)) {
+                const dropped = n.links.filter(id => goneIds.has(id))
+                if (!dropped.length) continue
+                n.links = n.links.filter(id => !goneIds.has(id))
+                result.notes.push(`${n.num} no longer links to ${dropped.map(id => goneIds.get(id)).join(', ')}, which ${dropped.length === 1 ? 'was' : 'were'} taken out.`)
+            }
             result.touchedAll = result.touchedAll.filter(n => !gone.includes(n))
             if (parent) touch(parent.num)
             else result.touched = ''

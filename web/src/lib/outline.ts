@@ -54,3 +54,25 @@ export const stillRunning = (node: OutlineNode, mark: unknown) =>
 
 /** The reference label of a node: its number and title, as references and the queue name it. */
 export const nodeLabel = (node: OutlineNode) => `${node.num} ${node.title}`.trim()
+
+/** A node's links by the numbers the nodes have now: those it comes from, and those that come from it. */
+export interface NodeLinks {
+    from: string[]
+    usedBy: string[]
+}
+
+/** Every node's links, by its number, read from the ids the nodes carry. A link to a node not there is left out. */
+export function linksByNum(nodes: OutlineNode[]): Map<string, NodeLinks> {
+    const all = allNodes(nodes)
+    const numOf = new Map(all.filter(n => n.id).map(n => [n.id!, n.num]))
+    const out = new Map<string, NodeLinks>()
+    const entry = (num: string) => out.get(num) ?? out.set(num, { from: [], usedBy: [] }).get(num)!
+    for (const n of all)
+        for (const id of n.links ?? []) {
+            const to = numOf.get(id)
+            if (!to) continue
+            entry(n.num).from.push(to)
+            entry(to).usedBy.push(n.num)
+        }
+    return out
+}

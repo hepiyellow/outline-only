@@ -25,6 +25,10 @@ export interface OutlineNode {
     status: Status
     /** The letter of an option tagged `@option_A`; its title then starts with `(A)`. */
     option?: string
+    /** Server mode: the node's stable id (`@id:`), which links hold. A node has one once a link points at it. */
+    id?: string
+    /** Server mode: the ids of the nodes this one comes from (`@links:`). */
+    links?: string[]
     /** The title as plain text, for references. */
     title: string
     /** The title as inline HTML. */

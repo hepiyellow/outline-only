@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { copyText } from '@/lib/send'
 import type { Statuses } from '@/lib/status'
 import { DONE_PILL, FAILED_PILL, contentHtml, liveHtml, type NodeContent } from '@/lib/content'
-import { allNodes } from '@/lib/outline'
+import { allNodes, type NodeLinks } from '@/lib/outline'
 import type { Box, KindKey, MarksChange } from '@/lib/status'
 import type { Message, OutlineNode, QueueItem, RemovedNode } from '@/types'
 import { NodeMessages } from './Inbox'
@@ -75,6 +75,8 @@ export interface OutlineContext {
     kindColumns: KindKey[]
     /** Node number → the kind marks that changed as a change was opened: they pulse once. */
     pulse: Map<string, MarksChange>
+    /** Node number → its links by the numbers the nodes have now (server mode). */
+    links: Map<string, NodeLinks>
 }
 
 export const OutlineCtx = createContext<OutlineContext | null>(null)
@@ -506,6 +508,45 @@ function RowMarks({ node, box }: { node: OutlineNode; box: Box }) {
     )
 }
 
+/**
+ * A node's links, as chips after its title: the nodes it comes from ("from 2.1, 2.4") and those that come from it
+ * ("used by 3.2"). Each number is a click to that node.
+ */
+function LinkChips({ node }: { node: OutlineNode }) {
+    const { links, onReveal } = useOutlineCtx()
+    const own = links.get(node.num)
+    if (!own) return null
+    const chip = (what: 'from' | 'used-by', nums: string[]) =>
+        nums.length > 0 && (
+            <span className="link-chip" data-links={what}>
+                {what === 'from' ? 'from' : 'used by'}{' '}
+                {nums.map((num, i) => (
+                    <span key={num}>
+                        {i > 0 && ', '}
+                        <button
+                            type="button"
+                            className="link-num"
+                            data-link-to={num}
+                            title={`Go to ${num}`}
+                            onClick={e => {
+                                e.stopPropagation()
+                                onReveal(num)
+                            }}
+                        >
+                            {num}
+                        </button>
+                    </span>
+                ))}
+            </span>
+        )
+    return (
+        <span className="link-chips">
+            {chip('from', own.from)}
+            {chip('used-by', own.usedBy)}
+        </span>
+    )
+}
+
 /** A node's envelope, when the agent has messages about it. */
 function Messages({ node }: { node: OutlineNode }) {
     const { messagesFor, seen, onSeen, onReveal } = useOutlineCtx()
@@ -545,7 +586,8 @@ export function withRemoved<T>(rows: T[], removed: RemovedNode[]): (T | RemovedN
     return out
 }
 
-export const isRemoved = (row: OutlineNode | RemovedNode): row is RemovedNode => 'id' in row
+// A removed row has no children: a node of the outline has, empty or not (a node's own id is no mark of either).
+export const isRemoved = (row: OutlineNode | RemovedNode): row is RemovedNode => !('children' in row)
 
 export function NodeList({ nodes, under }: { nodes: OutlineNode[]; under: string }) {
     const { removedIn } = useOutlineCtx()
@@ -642,6 +684,7 @@ function Group({ node }: { node: OutlineNode }) {
                 <ChevronDown className="tri size-4" aria-hidden="true" />
                 <span className="num">{node.num}</span>
                 <Title node={node} titleHtml={shown.titleHtml} />
+                <LinkChips node={node} />
                 <Messages node={node} />
                 <span className="kc" role="button" tabIndex={0} title={`${count} direct child${count === 1 ? '' : 'ren'} — click the row to collapse or expand`} onKeyDown={onKey}>
                     <span>{count}</span>
@@ -684,6 +727,7 @@ function Leaf({ node }: { node: OutlineNode }) {
             {text && <ChevronDown className="tri size-4" aria-hidden="true" />}
             <span className="num">{node.num}</span>
             <Title node={node} titleHtml={shown.titleHtml} />
+            <LinkChips node={node} />
             <Messages node={node} />
             <RowMarks node={node} box={box} />
             <span className="asks">
@@ -723,6 +767,7 @@ export function Topic({ node }: { node: OutlineNode }) {
                 <span className="node-title">
                     {node.num}. <span className="title-html" dangerouslySetInnerHTML={{ __html: shown.titleHtml }} />
                 </span>
+                <LinkChips node={node} />
                 <Messages node={node} />
                 <RowMarks node={node} box={box} />
                 <Asks node={node} />

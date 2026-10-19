@@ -108,7 +108,7 @@ html {
        title, as on a topic's head: the messages, the count of its children and its marks, and its buttons at the far
        right. */
     grid-template-columns: 48px 22px auto minmax(0, max-content) minmax(0, 1fr) auto auto auto auto;
-    grid-template-areas: 'ck tri num title . msg kc tags ask';
+    grid-template-areas: 'ck tri num title links msg kc tags ask';
     align-items: center;
     padding: 6px 0 6px 12px;
     border-bottom: 1px solid var(--border);
@@ -140,7 +140,7 @@ html {
     /* The first cell holds the approval box, 20px in. The triangle's place stays empty on a node without text, so that
        every row starts its number in one column. */
     grid-template-columns: 48px 22px auto minmax(0, max-content) minmax(0, 1fr) auto auto auto;
-    grid-template-areas: 'ck tri num title . msg tags ask' 'ck . diff diff diff diff diff diff' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
+    grid-template-areas: 'ck tri num title links msg tags ask' 'ck . diff diff diff diff diff diff' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
     align-items: baseline;
     margin: 0 0 4px;
     padding-left: 12px;
@@ -666,3 +666,30 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
 .hist-head .num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .hist-body { padding: 0 0 2px 4px; color: var(--muted-foreground); }
 .hist-kids { padding-left: 16px; border-left: 1px solid var(--border); }
+
+/* A node's links, after its title: what it comes from and what comes from it, each number a click to that node. */
+.row > .link-chips { grid-area: links; justify-self: start; }
+.row.leaf > .link-chips { align-self: start; margin-top: 11px; }
+.link-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+    font-size: 0.75rem;
+    font-weight: 400;
+}
+.link-chip {
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+}
+.link-num {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+.link-num:hover { text-decoration-style: solid; }

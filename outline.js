@@ -89,7 +89,12 @@ function extractQueue(source) {
  */
 export const HEAD_RE = /^(\d+(?:\.\d+)*)\.?(?:\s+|$)([\s\S]*)$/
 // A longer name comes before the name it starts with (`task-done` before `task`), or the shorter one would match.
-export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran)\b\s*/i
+export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|(?:id|links):[a-z0-9,]*[a-z0-9])\b\s*/i
+/**
+ * `@id:k3x9q2`: a node's stable id, which links hold (server mode). A node gets one the first time a link points at it.
+ * `@links:k3x9q2,b7c1d0`: the ids of the nodes a node comes from. Both are values, not names: `VALUE_TAG` splits them.
+ */
+export const VALUE_TAG = /^(id|links):([a-z0-9,]+)$/i
 /** `@option_A`: the node is option A of the question above it. The letter is in the tag, where it cannot be mistyped into the title. */
 export const OPTION_RE = /^option[_-]([a-z])$/i
 /**
@@ -123,15 +128,30 @@ function headNode(text, level) {
     let rest = m ? m[2] : text.trim()
     const tags = new Set()
     let option = ''
+    const values = {}
     for (let t; (t = rest.match(TAG_RE)); rest = rest.slice(t[0].length)) {
         const letter = t[1].match(OPTION_RE)
-        if (letter) {
+        const value = t[1].match(VALUE_TAG)
+        if (value) values[value[1].toLowerCase()] = value[2].toLowerCase()
+        else if (letter) {
             option = letter[1].toUpperCase()
             tags.add('option')
         } else for (const name of TAG_NAMES[t[1].toLowerCase()] ?? [t[1].toLowerCase()]) tags.add(name)
     }
     // The title reads as outlines wrote it before the tag, `(A) Title`, so the page and the messages it sends name the option the same way.
-    return { level, num: m ? m[1] : '', title: option ? `(${option}) ${rest.trim()}` : rest.trim(), option, tags, body: [], children: [], start: 0, end: 0 }
+    return {
+        level,
+        num: m ? m[1] : '',
+        title: option ? `(${option}) ${rest.trim()}` : rest.trim(),
+        option,
+        tags,
+        id: values.id ?? '',
+        links: values.links ? values.links.split(',').filter(Boolean) : [],
+        body: [],
+        children: [],
+        start: 0,
+        end: 0,
+    }
 }
 
 /**
@@ -140,7 +160,7 @@ function headNode(text, level) {
  */
 function parseOutline(source) {
     const tokens = md.parse(source, {})
-    const root = { level: 0, num: '', title: '', tags: new Set(), body: [], children: [], start: 0, end: 0 }
+    const root = { level: 0, num: '', title: '', tags: new Set(), links: [], body: [], children: [], start: 0, end: 0 }
     const stack = [root]
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i]
@@ -272,6 +292,8 @@ function nodeJson(node, lines) {
         tags: [...node.tags],
         status: STATUS[statusOf(node)],
         ...(node.option ? { option: node.option } : {}),
+        ...(node.id ? { id: node.id } : {}),
+        ...(node.links.length ? { links: node.links } : {}),
         title: plainTitle(node.title),
         titleHtml: md.renderInline(node.title),
         html,
