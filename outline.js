@@ -89,12 +89,17 @@ function extractQueue(source) {
  */
 export const HEAD_RE = /^(\d+(?:\.\d+)*)\.?(?:\s+|$)([\s\S]*)$/
 // A longer name comes before the name it starts with (`task-done` before `task`), or the shorter one would match.
-export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|(?:id|links):[a-z0-9,]*[a-z0-9])\b\s*/i
+export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|topic|stage-done|plan-item|(?:id|links|stages|stage):[a-z0-9,]*[a-z0-9])\b\s*/i
 /**
- * `@id:k3x9q2`: a node's stable id, which links hold (server mode). A node gets one the first time a link points at it.
- * `@links:k3x9q2,b7c1d0`: the ids of the nodes a node comes from. Both are values, not names: `VALUE_TAG` splits them.
+ * The tags of the lifecycle (server mode), whose values `VALUE_TAG` splits off their names:
+ * - `@id:k3x9q2`: a node's stable id, which links hold. A node gets one the first time a link points at it.
+ * - `@links:k3x9q2,b7c1d0`: the ids of the nodes a node comes from.
+ * - `@topic @stages:discussion,plan`: a topic, with the stages that are on for it.
+ * - `@stage:plan`: a stage of the topic above it, numbered by its place in the lifecycle; `@stage-done` once the agent
+ *   closed a Discussion or a Plan.
+ * - `@plan-item`: a node of a Plan stage that says what will be done.
  */
-export const VALUE_TAG = /^(id|links):([a-z0-9,]+)$/i
+export const VALUE_TAG = /^(id|links|stages|stage):([a-z0-9,]+)$/i
 /** `@option_A`: the node is option A of the question above it. The letter is in the tag, where it cannot be mistyped into the title. */
 export const OPTION_RE = /^option[_-]([a-z])$/i
 /**
@@ -147,6 +152,8 @@ function headNode(text, level) {
         tags,
         id: values.id ?? '',
         links: values.links ? values.links.split(',').filter(Boolean) : [],
+        stage: values.stage ?? '',
+        stages: values.stages ? values.stages.split(',').filter(Boolean) : [],
         body: [],
         children: [],
         start: 0,
@@ -160,7 +167,7 @@ function headNode(text, level) {
  */
 function parseOutline(source) {
     const tokens = md.parse(source, {})
-    const root = { level: 0, num: '', title: '', tags: new Set(), links: [], body: [], children: [], start: 0, end: 0 }
+    const root = { level: 0, num: '', title: '', tags: new Set(), links: [], stages: [], body: [], children: [], start: 0, end: 0 }
     const stack = [root]
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i]
@@ -238,7 +245,9 @@ export function countCheckboxProgress(source) {
     }
     const walk = node =>
         node.children.forEach(n => {
-            if (isQuestion(n)) count(questionStatus(n))
+            // A topic's heading and a stage's are the outline's structure: what counts is under them.
+            if (n.tags.has('topic') || n.stage) walk(n)
+            else if (isQuestion(n)) count(questionStatus(n))
             else if (n.children.length) walk(n)
             else count(statusOf(n))
         })
@@ -298,6 +307,8 @@ function nodeJson(node, lines) {
         ...(node.option ? { option: node.option } : {}),
         ...(node.id ? { id: node.id } : {}),
         ...(node.links.length ? { links: node.links } : {}),
+        ...(node.stage ? { stage: node.stage } : {}),
+        ...(node.tags.has('topic') ? { stages: node.stages } : {}),
         title: plainTitle(node.title),
         titleHtml: md.renderInline(node.title),
         html,

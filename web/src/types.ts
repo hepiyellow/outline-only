@@ -5,7 +5,7 @@ export type Status = 'open' | 'claim' | 'approved'
 
 /** The `@` tags a node's heading line can carry, right after its number. */
 /** The tags of a node, by the names the code uses: `@user-approved` is `approved`, `@agent-claim` is `claim`, `@action-done` is `action` and `ran`, `@action-failed` is `action` and `failed`. */
-export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed'
+export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed' | 'topic' | 'stage-done' | 'plan-item'
 
 /** A closing line of a node's text: `@Summary.`, `@Recommendation.` or `@Action.`, shown after its own tag. */
 export interface ClosingLine {
@@ -29,6 +29,10 @@ export interface OutlineNode {
     id?: string
     /** Server mode: the ids of the nodes this one comes from (`@links:`). */
     links?: string[]
+    /** Server mode: a stage's heading (`@stage:plan`) names its stage. */
+    stage?: StageName
+    /** Server mode: a topic's heading (`@topic`) lists the stages that are on (`@stages:`). */
+    stages?: StageName[]
     /** The title as plain text, for references. */
     title: string
     /** The title as inline HTML. */
@@ -42,12 +46,37 @@ export interface OutlineNode {
     children: OutlineNode[]
 }
 
+/** The stages of the lifecycle, in its order. */
+export type StageName = 'discussion' | 'plan' | 'implementation' | 'verification' | 'preservation'
+
+/** Where a stage of a topic stands (model.js `stageStatus`). */
+export type StageStatus = 'off' | 'not-started' | 'active' | 'done'
+
+/** A stage heading, as the server reads it (model.js `lifecycleOf`). */
+export interface StageInfo {
+    /** The number of its topic. */
+    topic: string
+    name: StageName
+    on: boolean
+    status: StageStatus
+    /** Implementation, Verification, Preservation: how many of its tasks are done. */
+    progress?: { done: number; total: number }
+    /** The first stage of its topic that is on and not started: the page dims it as the next one. */
+    next?: boolean
+}
+
+/** Server mode: the outline's topics and stages, by number. Both are empty for an outline without topics. */
+export interface Lifecycle {
+    topics: Record<string, { id: string; title: string; stages: StageName[] }>
+    stages: Record<string, StageInfo>
+}
+
 /** One change of a node, from GET /api/outline/<project>/<file>/history?num=: when, and the node's subtree then. */
 export interface HistoryEntry {
     at: number
     node: OutlineNode
     /** What the user did on the node then, from the approval log: the kind is the one the node had. */
-    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain' }[]
+    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran' | 'turned-off' | 'turned-on'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain'; stage?: StageName }[]
 }
 
 /**
@@ -119,6 +148,8 @@ export interface Outline {
     folder: string
     /** Whether the Terminal tab can attach: the outline names a tmux session and the server can run terminals. */
     terminalTab: boolean
+    /** Server mode: the outline's topics and stages. */
+    lifecycle: Lifecycle
     /** HTML of any text before the first topic. */
     intro: string
     /** The topics. */

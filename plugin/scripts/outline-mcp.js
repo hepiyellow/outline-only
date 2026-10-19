@@ -18,6 +18,7 @@ const PROJECT = process.env.OUTLINE_PROJECT || path.basename(CWD)
 let outline = ''
 
 const text = { type: 'string' }
+const STAGE = { enum: ['discussion', 'plan', 'implementation', 'verification', 'preservation'] }
 const NODE = {
     title: { ...text, description: 'Short title, 2 to 8 words, no tags or numbers.' },
     text: { ...text, description: "The node's text as markdown (paragraphs, bullets, code, tables; no headings)." },
@@ -65,11 +66,14 @@ const TOOLS = [
         description: [
             'Change the outline: a list of operations applied together, all or none. Make one call per turn, after your answer is decided. The result carries what the user did on the page since you were last told, and a map of the outline.',
             'Operations (op):',
-            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, links?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent, at most ten levels deep. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat. links names the nodes it comes from.',
-            '- update { num, title?, text?, summary?, recommendation?, task?, status?, ask?, recommended?, links? }: each field given replaces that whole field ("" clears it), so write the full new text.',
+            'Topics and stages: an outline is made of topics, each going through the stages Discussion, Plan, Implementation, Verification, Preservation, with each stage on or off. An outline nobody chose stages for is one topic with Discussion alone, not written: its nodes are the top level. Once it has a second topic or a second stage, its nodes move under 1.1 (the Discussion of topic 1) and are renumbered once; from then on a topic\'s children are its stages, numbered by their place in that order (Discussion .1, Plan .2, Implementation .3, Verification .4, Preservation .5), and nodes go under a stage. Tasks sit only in Implementation, Verification (a check is a task there) and Preservation; plan items only in Plan; questions and claims anywhere.',
+            '- add { num, title, text?, summary?, recommendation?, status?, ask?, task?, outcome?, failed?, plan?, links?, options?, children? }: a new node. num is its full path (2.4), the next free number under its parent, at most ten levels deep. options makes it a question the user answers by picking one; children are nodes under it, numbered in order. outcome adds it as a task you already carried out, because the user asked for it in chat. links names the nodes it comes from. plan makes it a plan item. With stages { num, title, text?, stages } instead, it is a new topic, at the top level or inside a stage, with the stages listed on, in order; a topic inside a stage starts at that stage or a later one.',
+            '- update { num, title?, text?, summary?, recommendation?, task?, status?, ask?, recommended?, plan?, links? }: each field given replaces that whole field ("" clears it), so write the full new text.',
             '- move { num, under }: puts a node under another parent ("" for the top level), where it takes the next number.',
             '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered, and a link to a node taken out is dropped.',
-            '- record { num, decision }: what the user decided in chat. approve, reopen, or pick (num is the option). Only what the user said, never your own judgment.',
+            '- record { num, decision, stage? }: what the user decided in chat. approve, reopen, or pick (num is the option); stage-off with stage when the user said to turn a stage of topic num off (it keeps its nodes, folded away; adapt the topic to it). Only what the user said, never your own judgment.',
+            '- stages { num?, on }: turns stages of topic num on (num left out: the outline\'s one topic). You never turn one off: only the user does.',
+            '- done { num }: closes the Discussion or Plan stage num: its deciding or planning is done. Refused while a Discussion holds an unresolved question. Implementation, Verification and Preservation are done once their tasks are.',
             '- finish { num, outcome, failed? }: you carried out what the node describes, so it shows as a task done; outcome says what happened. The node is a task the user ran, or any node about something the user asked you in chat to do.',
             '- acknowledge {}: you took in the ticks the user made on the page and nothing in the outline follows from them. Any change made after you were told of a tick acknowledges it, so send this only in a change that holds nothing else.',
             '- message { text, num? }: a note for the inbox about something the outline does not hold.',
@@ -84,14 +88,18 @@ const TOOLS = [
                     items: {
                         type: 'object',
                         properties: {
-                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'acknowledge', 'message', 'queue'] },
+                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'done', 'acknowledge', 'message', 'queue'] },
                             num: { ...text, description: 'Full-path node number, e.g. 2.1.3.' },
                             ...NODE,
                             options: { type: 'array', items: OPTION, description: 'add: the options of a question, at least two; at most one recommended.' },
                             children: { type: 'array', items: { type: 'object' }, description: 'add: nodes under the new node, each shaped like an add without num.' },
                             recommended: { type: 'boolean', description: 'update: marks an option as the one you recommend.' },
                             under: { ...text, description: 'move: the number of the new parent, or "" for the top level.' },
-                            decision: { enum: ['approve', 'reopen', 'pick'], description: 'record.' },
+                            decision: { enum: ['approve', 'reopen', 'pick', 'stage-off'], description: 'record.' },
+                            stages: { type: 'array', items: STAGE, description: 'add: makes the node a topic, with these stages on, in the lifecycle\'s order.' },
+                            on: { type: 'array', items: STAGE, description: 'stages: the stages to turn on.' },
+                            stage: { ...STAGE, description: 'record with stage-off: the stage the user turned off.' },
+                            plan: { type: 'boolean', description: 'add, update: the node is a plan item: it says what will be done, sits in a Plan stage, and has no Run button. Its tasks in Implementation link to it.' },
                             outcome: { ...text, description: 'finish, or an add of something you already did: what happened, in one or two sentences.' },
                             failed: { type: 'boolean', description: 'finish, or an add with outcome: you tried and it did not work.' },
                             items: {

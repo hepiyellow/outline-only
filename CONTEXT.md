@@ -13,7 +13,7 @@ What is kept for an outline session and the page shows: its title, its nodes and
 _Avoid_: Mirror, notes, file (the file is how an outline is stored, in both modes)
 
 **Operation**:
-One change an agent asks of an outline in server mode: add, update, move or remove a node, record what the user decided in chat, finish a task, acknowledge the user's ticks, post a message, or order the queue.
+One change an agent asks of an outline in server mode: add, update, move or remove a node, record what the user decided in chat, finish a task, turn a topic's stages on, close a Discussion or a Plan, acknowledge the user's ticks, post a message, or order the queue.
 _Avoid_: Edit, command, patch
 
 **Map**:
