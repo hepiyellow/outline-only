@@ -5,10 +5,11 @@ import type { HistoryEntry, OutlineNode } from '@/types'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog'
 
 /** What the user did on a node, in words: an approval says what it approved. */
-const didText = ({ what, kind, stage }: NonNullable<HistoryEntry['did']>[number]): string => {
+const didText = ({ what, kind, stage, from }: NonNullable<HistoryEntry['did']>[number]): string => {
     // A stage turned on or off, or reopened, is the user's act on a topic's stages.
     if (what === 'turned-off' || what === 'turned-on') return `You turned ${stage ? stage[0].toUpperCase() + stage.slice(1) : 'a stage'} ${what === 'turned-off' ? 'off' : 'on'}`
     if (what === 'reopened') return 'You reopened it'
+    if (what === 'merged') return `You merged “${from ?? 'a topic'}” into it`
     return what === 'ran'
         ? 'You ran it'
         : what === 'picked'

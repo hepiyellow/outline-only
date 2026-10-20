@@ -982,3 +982,13 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
     color: var(--muted-foreground);
     font-size: 0.8rem;
 }
+.lc-merge {
+    max-width: 9rem;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--background);
+    color: var(--muted-foreground);
+    font-size: 0.72rem;
+    font-weight: 500;
+}

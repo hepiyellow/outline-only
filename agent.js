@@ -228,7 +228,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of events) if (TICKS.includes(e.kind) && ledger.unacked[e.num]) ledger.unacked[e.num].told = true
         // A node ticked and unticked again says only where it ended up.
         const last = new Map()
-        for (const e of events) last.set(e.kind === 'run' || e.kind === 'renamed' || e.kind === 'reopened-stage' ? `${e.kind}:${e.num}` : e.kind === 'stage' ? `stage:${e.num}:${e.stage}` : e.num, e)
+        for (const e of events) last.set(TICKS.includes(e.kind) ? e.num : `${e.kind}:${e.num}:${e.stage ?? ''}`, e)
         const by = kind => [...last.values()].filter(e => e.kind === kind)
         const refs = list => list.map(e => `${e.num} ${e.title}`).join('; ')
         const lines = []
@@ -239,7 +239,9 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of by('renamed')) lines.push(`- renamed the outline to "${e.title}"`)
         for (const e of by('stage')) lines.push(`- turned ${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num} ${e.title}${e.on ? '' : ': it keeps its nodes, folded away, and asks nothing; adapt the topic to it'}`)
         for (const e of by('reopened-stage')) lines.push(`- reopened ${e.num} ${e.title}: it is active again`)
-        for (const e of events.filter(e => e.kind === 'ripple')) lines.push(`- so ${e.title} changed, and what comes from it needs review: ${e.marks.join('; ')}`)
+        for (const e of by('merged'))
+            lines.push(`- merged the topic "${e.from}" into ${e.num} ${e.title}: its nodes are under the stages of ${e.num} now, with their links. Numbers changed: ${e.renumbered.join('; ')}`)
+        for (const e of by('ripple')) lines.push(`- so ${e.title} changed, and what comes from it needs review: ${e.marks.join('; ')}`)
         return `On the page, since you were last told, the user:\n${lines.join('\n')}\nThe outline already shows this; do not record it again.`
     }
 
@@ -254,6 +256,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         const stages = new Map()
         for (const e of ledger.events) if (e.kind === 'stage' || e.kind === 'reopened-stage') stages.set(`${e.kind}:${e.num}:${e.stage}`, e)
         const turned = [...stages.values()].map(e => (e.kind === 'stage' ? `${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num}` : `reopened ${e.num}`))
+        for (const e of ledger.events) if (e.kind === 'merged') turned.push(`"${e.from}" merged into ${e.num}`)
         return [parts.length && `Ticked in the outline: ${parts.join('; ')}.`, turned.length && `Stages changed in the outline: ${turned.join('; ')}.`].filter(Boolean).join(' ')
     }
 
@@ -624,7 +627,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
      * The user's ticks on the page (`set`: `{ num, approved }` per node) or a press of Run (`run`: a node number). Run
      * reaches the agent at once, ticks once the user has paused (`tellSoon`).
      */
-    async function act(project, file, { set, run, stage, reopen }) {
+    async function act(project, file, { set, run, stage, reopen, merge }) {
         const model = readModel(project, file)
         const ledger = readLedger(project, file)
         const at = Date.now()
@@ -651,6 +654,32 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             writeModel(project, file, model)
             actionLog.record(project, file, [staged], at)
             ledger.events.push({ at, kind: staged.what === 'reopened' ? 'reopened-stage' : 'stage', num: staged.num, title: staged.title, stage: staged.stage, on: staged.what === 'turned-on' })
+            tellSoon(project, file)
+        }
+        // Two topics the user merged: the server combines them as the agent's record of it would, and follows the
+        // numbers that changed everywhere it keeps them.
+        if (merge !== undefined) {
+            if (!merge || typeof merge !== 'object') throw new OpError('a merge is { num, into }')
+            let result
+            try {
+                result = applyOperations(model, [{ op: 'record', decision: 'merge', num: String(merge.num), into: String(merge.into) }], ledger.shown)
+            } catch (e) {
+                if (e instanceof OpError) e.message = e.message.replace(/^Operation 1 of 1 \(record[^)]*\): /, '')
+                throw e
+            }
+            // The node last touched is the agent's to mark, not the user's.
+            normalize(model)
+            const moved = num => result.renumbered.get(num) ?? num
+            const live = new Set(allNodes(model.nodes).map(n => n.num))
+            for (const item of ledger.events) item.num = moved(item.num)
+            ledger.unacked = Object.fromEntries(Object.entries(ledger.unacked).map(([num, tick]) => [moved(num), tick]).filter(([num]) => live.has(num)))
+            ledger.changedAt = Object.fromEntries(Object.entries(ledger.changedAt ?? {}).map(([num, t]) => [moved(num), t]).filter(([num]) => live.has(num)))
+            ledger.removed = (ledger.removed ?? []).map(t => ({ ...t, parent: t.parent && moved(t.parent) })).filter(t => !t.parent || live.has(t.parent))
+            writeModel(project, file, model)
+            actionLog.renumber(project, file, result, at)
+            actionLog.record(project, file, result.decisions.map(({ node, ...entry }) => ({ ...entry, num: node.num })), at)
+            const into = result.decisions[0]?.node
+            ledger.events.push({ at, kind: 'merged', num: into.num, title: into.title, from: result.decisions[0].from, renumbered: [...result.renumbered].map(([a, b]) => `${a} -> ${b}`) })
             tellSoon(project, file)
         }
         let typed = false

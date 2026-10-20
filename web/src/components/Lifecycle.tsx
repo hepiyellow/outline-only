@@ -168,6 +168,7 @@ export function TopicSection({ node }: { node: OutlineNode }) {
                 <WaitsFor topic={node} />
                 <StageSwitches topic={node} />
                 <LayoutSwitch topic={node} />
+                <MergeInto topic={node} />
                 <Messages node={node} />
                 <Asks node={node} />
             </div>
@@ -292,6 +293,31 @@ function StageNodes({ stage, empty }: { stage: OutlineNode; empty: string }) {
     const rest = stage.children.filter(n => !shown.has(n.num))
     if (rest.length) return <NodeList nodes={rest} under={stage.num} />
     return <p className="stage-empty">{stage.children.length ? 'Shown under their plan items.' : empty}</p>
+}
+
+/** Merges the topic into another, as the user's act: the two are combined stage by stage, links kept, numbers changed. */
+function MergeInto({ topic }: { topic: OutlineNode }) {
+    const { lifecycle, onMerge } = useOutlineCtx()
+    const others = Object.entries(lifecycle.topics).filter(([num]) => num !== topic.num && !num.startsWith(`${topic.num}.`))
+    if (!others.length) return null
+    return (
+        <select
+            className="lc-merge"
+            data-merge-into={topic.num}
+            aria-label={`Merge ${topic.num} into another topic`}
+            title="Merge this topic into another: their nodes are combined stage by stage, and the agent is told"
+            value=""
+            onClick={e => e.stopPropagation()}
+            onChange={e => e.target.value && onMerge(topic.num, e.target.value)}
+        >
+            <option value="">Merge into…</option>
+            {others.map(([num, t]) => (
+                <option key={num} value={num}>
+                    {num}. {t.title}
+                </option>
+            ))}
+        </select>
+    )
 }
 
 /** A topic's layout switch: by stage, as its nodes are kept, or by plan item. Only for a topic with a Plan. */

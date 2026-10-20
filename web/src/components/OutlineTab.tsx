@@ -103,6 +103,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
         return {
             onStage: (topic: string, name: StageName, on: boolean) => void post({ stage: { topic, name, on } }),
             onReopen: (stage: string) => void post({ reopen: stage }),
+            onMerge: (num: string, into: string) => void post({ merge: { num, into } }),
         }
     }, [outline.project, outline.file, notify])
     const ctx = useMemo<OutlineContext>(() => {

@@ -595,3 +595,70 @@ describe('topic layouts and the stage view are viewer state', () => {
         }
     })
 })
+
+describe('split and merge', () => {
+    function work() {
+        const model = outline('')
+        change(model, [
+            { op: 'add', num: '1', title: 'Search', stages: ['discussion', 'plan', 'implementation', 'verification'] },
+            { op: 'add', num: '1.1.1', title: 'Use Redis', status: 'claim' },
+            { op: 'add', num: '1.1.2', title: 'Index nightly', status: 'claim' },
+            { op: 'add', num: '1.2.1', title: 'Size the cluster', plan: true, links: ['1.1.1'] },
+            { op: 'add', num: '1.2.2', title: 'Rebuild the index', plan: true, links: ['1.1.2'] },
+            { op: 'add', num: '1.3.1', title: 'Provision', task: 'Provisions it.', links: ['1.2.1'] },
+            { op: 'add', num: '1.3.2', title: 'Write the rebuild job', task: 'Writes it.', links: ['1.2.2'] },
+            { op: 'add', num: '1.4.1', title: 'Run the job once', task: 'Runs it.', links: ['1.3.2'] },
+        ])
+        return model
+    }
+
+    test('a split moves the nodes listed into a sibling topic with Discussion off; ids and links move with them, decisions stay', () => {
+        const model = work()
+        const ids = ['1.2.2', '1.3.2', '1.4.1'].map(num => findNode(model, num).id || '')
+        const result = change(model, [{ op: 'split', num: '1', title: 'Index rebuild', nodes: ['1.2.2', '1.3.2', '1.4.1'] }])
+        const fresh = findNode(model, '2')
+        assert.equal(fresh.title, 'Index rebuild')
+        assert.deepEqual(fresh.stages, ['plan', 'implementation', 'verification'])
+        assert.deepEqual(fresh.children.map(c => c.num), ['2.2', '2.3', '2.4'])
+        assert.deepEqual(['2.2.1', '2.3.1', '2.4.1'].map(num => findNode(model, num).title), ['Rebuild the index', 'Write the rebuild job', 'Run the job once'])
+        assert.deepEqual(['2.2.1', '2.3.1', '2.4.1'].map(num => findNode(model, num).id || ''), ids)
+        assert.equal(findNode(model, '2.2.1').links[0], findNode(model, '1.1.2').id)
+        assert.equal(findNode(model, '1.1.2').title, 'Index nightly')
+        assert.deepEqual([...result.renumbered], [['1.2.2', '2.2.1'], ['1.3.2', '2.3.1'], ['1.4.1', '2.4.1']])
+        assert.match(result.notes.at(-1), /3 nodes of 1 moved into the new topic 2 Index rebuild, with Discussion off/)
+        // Its plan item links to a decision of 1: it waits for 1.
+        assert.deepEqual(lifecycleOf(model).topics['2'].waitsFor, ['1'])
+        assert.match(serializeOutline(model), /^# 2\. @current @topic @stages:plan,implementation,verification @id:[a-z0-9]{6} Index rebuild$/m)
+    })
+
+    test('a split leaves decisions where they were made, and takes only nodes of its topic', () => {
+        const model = work()
+        refused(model, [{ op: 'split', num: '1', title: 'Index', nodes: ['1.1.2'] }], /1\.1\.2 is in Discussion, and the decisions stay in the topic they were made in/, /Discussion off/)
+        refused(model, [{ op: 'split', num: '1', title: 'Index', nodes: ['1.2'] }], /1\.2 is a stage/)
+        refused(model, [{ op: 'split', num: '1', title: 'Index', nodes: [] }], /needs the nodes that move/)
+        change(model, [{ op: 'add', num: '2', title: 'Billing', stages: ['plan'] }, { op: 'add', num: '2.2.1', title: 'Bill it', plan: true }])
+        refused(model, [{ op: 'split', num: '1', title: 'Index', nodes: ['2.2.1'] }], /2\.2\.1 is not in topic 1/)
+    })
+
+    test('a merge the user asked for combines two topics stage by stage: ids kept, numbers changed, in the action log', () => {
+        const model = work()
+        change(model, [
+            { op: 'split', num: '1', title: 'Index rebuild', nodes: ['1.2.2', '1.3.2', '1.4.1'] },
+            { op: 'add', num: '3', title: 'Billing', stages: ['discussion'] },
+            { op: 'depends', num: '3', on: ['2'] },
+        ])
+        const id = findNode(model, '2.3.1').id || 'none'
+        const result = change(model, [{ op: 'record', num: '2', decision: 'merge', into: '1' }])
+        assert.deepEqual(result.decisions.map(d => [d.what, d.num, d.from]), [['merged', '1', 'Index rebuild']])
+        assert.deepEqual(model.nodes.map(n => n.title), ['Search', 'Billing'])
+        assert.deepEqual(['1.2.2', '1.3.2', '1.4.1'].map(num => findNode(model, num).title), ['Rebuild the index', 'Write the rebuild job', 'Run the job once'])
+        assert.equal(findNode(model, '1.3.2').id || 'none', id)
+        assert.equal(result.renumbered.get('2'), '1')
+        assert.equal(result.renumbered.get('3'), '2')
+        assert.equal(result.renumbered.get('2.3.1'), '1.3.2')
+        // Billing waited for Index rebuild: it waits for Search now.
+        assert.deepEqual(lifecycleOf(model).topics['2'].waitsFor, ['1'])
+        refused(model, [{ op: 'record', num: '1', decision: 'merge', into: '1' }], /cannot be merged into itself/)
+        refused(model, [{ op: 'record', num: '1', decision: 'merge', into: '1.1.1' }], /1\.1\.1 is not a topic/)
+    })
+})

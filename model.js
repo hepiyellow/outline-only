@@ -1172,6 +1172,80 @@ export function applyOperations(model, ops, shown = {}) {
         touch(topic.num)
     }
 
+    /** Takes nodes out of where they stand and closes the gaps they leave; returns them, in outline order. */
+    const lift = nodes => {
+        const order = new Map(allNodes(model.nodes).map((n, i) => [n, i]))
+        const lifted = [...nodes].sort((a, b) => order.get(a) - order.get(b))
+        const parents = new Set()
+        for (const n of lifted) {
+            const parent = indexOf(model).get(n.num).parent
+            const from = parent ? parent.children : model.nodes
+            from.splice(from.indexOf(n), 1)
+            parents.add(parent)
+        }
+        for (const parent of parents) renumbered(closeGap(parent ? parent.children : model.nodes, parent))
+        return lifted
+    }
+
+    /** Puts nodes under a stage of a topic, after what it holds, each numbered and leveled there. */
+    const place = (nodes, topic, name) => {
+        if (!nodes.length) return
+        let stage = topic.children.find(c => c.stage === name)
+        if (!stage) {
+            stage = stageHeading(name, topic.num, topic.level + 1)
+            topic.children.push(stage)
+            topic.children.sort((a, b) => stageIndex(a.stage) - stageIndex(b.stage))
+        }
+        const map = new Map()
+        for (const n of nodes) {
+            if (stage.level + depthOf(n) > MAX_LEVEL) throw new OpError(`Under ${stage.num}, ${n.num} and its nodes would be deeper than ${MAX_LEVEL} levels.`, 'Fold its deepest nodes into bullets first.')
+            renumber(n, nextNumber(stage.num, stage.children), stage.level + 1, map)
+            stage.children.push(n)
+        }
+        renumbered(map)
+    }
+
+    /**
+     * Two topics made one, as the user said (`num` into `into`): the nodes of each stage of the one go after those of
+     * the same stage of the other, which gets every stage either had on; the topics that waited for the one wait for
+     * the other. Ids, and so links, are kept; numbers change, and the one's own number goes to the other.
+     */
+    const merge = op => {
+        const from = topicFor(op.num, 'A merge')
+        const into = topicFor(op.into, 'A merge')
+        if (!from || !into) throw new OpError('A merge needs two topics: num, and into.', 'Pass num, the topic the user merged, and into, the topic it went into.')
+        if (from === into) throw new OpError(`${from.num} cannot be merged into itself.`)
+        if (into.num.startsWith(`${from.num}.`)) throw new OpError(`${into.num} sits inside ${from.num}, so ${from.num} cannot go into it.`, `Merge ${into.num} into ${from.num} instead.`)
+        const holder = placeOf(model, into.num).stage
+        const early = holder && from.stages.find(name => stageIndex(name) < stageIndex(holder.stage))
+        if (early) throw new OpError(`${into.num} sits inside ${holder.num} ${STAGE_NAME[holder.stage]}, so it cannot take ${STAGE_NAME[early]} from ${from.num}.`, 'Merge the other way round.')
+        const title = from.title
+        const fromNum = from.num
+        into.stages = [...new Set([...into.stages, ...from.stages])].sort((a, b) => stageIndex(a) - stageIndex(b))
+        fitStages(into)
+        // The topics that waited for the one wait for the other, which waits for what either waited for.
+        const fromId = idOf(model, from)
+        const intoId = idOf(model, into)
+        for (const t of allTopics(model)) if (t.depends.includes(fromId)) t.depends = [...new Set(t.depends.map(id => (id === fromId ? intoId : id)))].filter(id => id !== t.id)
+        into.depends = [...new Set([...into.depends, ...from.depends])].filter(id => id !== intoId && id !== fromId)
+        for (const stage of from.children.filter(c => c.stage)) {
+            const moving = stage.children
+            stage.children = []
+            place(moving, into, stage.stage)
+        }
+        // The one's heading goes, with its empty stages; its number, in the action log and wherever the page keeps
+        // numbers, now means the other.
+        const parent = indexOf(model).get(from.num).parent
+        const siblings = parent ? parent.children : model.nodes
+        siblings.splice(siblings.indexOf(from), 1)
+        for (const n of allNodes([from])) delete shown[n.num]
+        renumbered(closeGap(siblings, parent))
+        result.renumbered.set(fromNum, into.num)
+        result.decisions.push({ ...userEntry(model, into.num, 'merged'), from: title, node: into })
+        result.notes.push(`${fromNum} ${title} is merged into ${into.num} ${into.title}, as the user said: its nodes are under the stages of ${into.num} now, with their links.`)
+        touch(into.num)
+    }
+
     const apply = {
         add(op) {
             if (op.stages !== undefined) return addTopic(op)
@@ -1348,6 +1422,7 @@ export function applyOperations(model, ops, shown = {}) {
 
         record(op) {
             if (op.decision === 'stage-off') return stageOff(op)
+            if (op.decision === 'merge') return merge(op)
             const { node, parent } = get(op.num)
             const option = parent && isQuestion(parent)
             if (op.decision === 'pick') {
@@ -1374,7 +1449,7 @@ export function applyOperations(model, ops, shown = {}) {
                 }
                 // A decision reopened: what was built on it needs review.
                 rippleFrom(allNodes([node]))
-            } else throw new OpError(`A record's decision is "approve", "reopen", "pick" or "stage-off", not ${JSON.stringify(op.decision)}.`)
+            } else throw new OpError(`A record's decision is "approve", "reopen", "pick", "stage-off" or "merge", not ${JSON.stringify(op.decision)}.`)
             touch(op.num)
         },
 
@@ -1435,6 +1510,46 @@ export function applyOperations(model, ops, shown = {}) {
             fitStages(topic)
             for (const n of topic.children) shown[n.num] ??= nodeHash(n)
             touch(topic.num)
+        },
+
+        // Moves part of a topic into a sibling topic of its own, once it can be done and verified alone: the nodes listed,
+        // each with what is under it, its id and its links. Decisions stay where they were made: the new topic has
+        // Discussion off, and its plan items keep their links to them.
+        split(op) {
+            let topic = topicFor(op.num, 'A split')
+            if (!topic) topic = giveTopics()
+            if (!Array.isArray(op.nodes) || !op.nodes.length) throw new OpError('A split needs the nodes that move.', 'Pass nodes: ["1.2.3", …]: the plan items, tasks and checks of the part that can be done and verified alone.')
+            const title = checkTitle(op.title, 'the new topic')
+            const listed = op.nodes.map(num => {
+                // Numbers given before this change wrote the outline's topics have moved under 1.1.
+                const { node } = get(isText(num) ? (result.renumbered.get(num) ?? num) : num)
+                const place = placeOf(model, node.num)
+                if (isStructure(node)) throw new OpError(`${node.num} is ${node.topic ? 'a topic' : 'a stage'}.`, 'List the nodes that move: plan items, tasks and checks.')
+                if (place.topic !== topic) throw new OpError(`${node.num} is not in topic ${topic.num}.`, `List nodes of ${topic.num} only.`)
+                if (place.name === 'discussion')
+                    throw new OpError(`${node.num} is in Discussion, and the decisions stay in the topic they were made in.`, 'The new topic has Discussion off: move the plan items and the tasks, which keep their links to the decisions here.')
+                if (isQuestion(indexOf(model).get(node.num).parent ?? blankNode(0))) throw new OpError(`${node.num} is an option: it moves with its question.`)
+                return { node, name: place.name }
+            })
+            const moving = listed.filter(({ node }) => !listed.some(o => o.node !== node && node.num.startsWith(`${o.node.num}.`)))
+            const holderNode = indexOf(model).get(topic.num).parent
+            const siblings = holderNode ? holderNode.children : model.nodes
+            const fresh = blankNode(topic.level)
+            fresh.topic = true
+            fresh.title = title
+            fresh.text = checkText(op.text, 'the new topic') ?? ''
+            fresh.stages = topic.stages.filter(name => name !== 'discussion')
+            for (const { name } of moving) if (!fresh.stages.includes(name)) fresh.stages.push(name)
+            fresh.stages.sort((a, b) => stageIndex(a) - stageIndex(b))
+            fresh.id = newId(byId(model))
+            const nodes = lift(moving.map(m => m.node))
+            fresh.num = nextNumber(holderNode?.num ?? '', siblings)
+            siblings.push(fresh)
+            fitStages(fresh)
+            for (const name of STAGES) place(nodes.filter(n => moving.find(m => m.node === n).name === name), fresh, name)
+            for (const n of allNodes([fresh])) shown[n.num] ??= nodeHash(n)
+            result.notes.push(`${moving.length} node${moving.length === 1 ? '' : 's'} of ${topic.num} moved into the new topic ${fresh.num} ${fresh.title}, with Discussion off; their links stay.`)
+            touch(fresh.num)
         },
 
         // The agent looked at a node a ripple reached and says it still holds: its mark goes. Changing the node clears it too.

@@ -91,6 +91,8 @@ export interface OutlineContext {
     nodeByNum: Map<string, OutlineNode>
     /** Opens the overview of a node: its trace, in a panel at the side. */
     onOverview: (node: OutlineNode) => void
+    /** The user merges a topic into another. */
+    onMerge: (topic: string, into: string) => void
 }
 
 export const OutlineCtx = createContext<OutlineContext | null>(null)

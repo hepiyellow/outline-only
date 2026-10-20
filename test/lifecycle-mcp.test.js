@@ -121,4 +121,21 @@ describe('the lifecycle through the MCP tools', () => {
         const read = await mcp.tool('read', { num: '1.1.2.1' })
         assert.match(read.text, /^- so 1\.1\.2\.2 A shared Redis cluster changed, and what comes from it needs review: 1\.1\.2\.1 Size the cluster; 1\.2\.1 Roll out by region; 1\.3\.1 Deploy$/m)
     })
+
+    test('the agent splits part of a topic off; the user merges it back on the page, and the agent is told what changed', async () => {
+        const split = await mcp.tool('change', { ops: [{ op: 'split', num: '1', title: 'Rollout', nodes: ['1.3.1'] }] })
+        assert.equal(split.error, false, split.text)
+        assert.match(split.text, /^Numbers changed .*: 1\.3\.1 -> 2\.3\.1$/m)
+        assert.match(split.text, /^2 Rollout \[topic, stages on: implementation; waits for 1\]/m)
+        const act = body =>
+            fetch(`${server.url}/api/outline/shop/${path.basename(file, '.md')}/act`, { method: 'POST', headers: { 'content-type': 'application/json', origin: server.url }, body: JSON.stringify(body) })
+        assert.equal((await act({ merge: { num: '2', into: '1' } })).status, 200)
+        assert.equal((await act({ merge: { num: '1', into: '1' } })).status, 400)
+        assert.doesNotMatch(outlineText(), /^# 2\. /m)
+        assert.match(outlineText(), /^### 1\.3\.1 .*Deploy$/m)
+        const read = await mcp.tool('read', { num: '1' })
+        assert.match(read.text, /^- merged the topic "Rollout" into 1 Search caching: its nodes are under the stages of 1 now, with their links\. Numbers changed: 2\.3\.1 -> 1\.3\.1; 2 -> 1$/m)
+        const history = await (await fetch(`${server.url}/api/outline/shop/${path.basename(file, '.md')}/history?num=1`, { headers: { origin: server.url } })).json()
+        assert.deepEqual(history.flatMap(e => e.did ?? []).at(-1), { what: 'merged', kind: 'plain', from: 'Rollout' })
+    })
 })

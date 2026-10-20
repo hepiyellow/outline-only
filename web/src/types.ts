@@ -82,7 +82,7 @@ export interface HistoryEntry {
     at: number
     node: OutlineNode
     /** What the user did on the node then, from the approval log: the kind is the one the node had. */
-    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran' | 'turned-off' | 'turned-on' | 'reopened'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain'; stage?: StageName }[]
+    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran' | 'turned-off' | 'turned-on' | 'reopened' | 'merged'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain'; stage?: StageName; from?: string }[]
 }
 
 /**

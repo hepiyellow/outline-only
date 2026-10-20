@@ -271,8 +271,8 @@ function readOutline(project, file) {
  */
 function withUserActs(entries, acts) {
     const out = entries.map(e => ({ ...e }))
-    for (const { at, what, kind, stage } of acts) {
-        const did = { what, kind, ...(stage ? { stage } : {}) }
+    for (const { at, what, kind, stage, from } of acts) {
+        const did = { what, kind, ...(stage ? { stage } : {}), ...(from ? { from } : {}) }
         const written = out.find(e => e.at >= at && e.at - at < 1500)
         if (written) (written.did ??= []).push(did)
         else {

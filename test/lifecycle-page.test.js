@@ -389,4 +389,16 @@ describe('the lifecycle on the page', () => {
         })
         await until(async () => (await overview().count()) === 0, { what: 'the swipe to close it' })
     })
+
+    test('a topic is merged into another from its heading, as the user’s act', async () => {
+        await show('merge', PLAN_ITEMS)
+        await page.locator('[data-merge-into="2"]').selectOption('1')
+        const file = path.join(server.dir, 'demo', 'merge.md')
+        await until(() => !/^# 2\. /m.test(fs.readFileSync(file, 'utf8')), { what: 'topic 2 to be merged' })
+        assert.match(fs.readFileSync(file, 'utf8'), /^# 1\. @topic @stages:discussion,plan,implementation,verification @id:topica Search$/m)
+        assert.match(fs.readFileSync(file, 'utf8'), /^### 1\.1\.2 @agent-claim Region by region$/m)
+        assert.match(fs.readFileSync(file, 'utf8'), /^### 1\.3\.4 @task Deploy$/m)
+        await until(async () => (await page.locator('.lc-topic').count()) === 0, { what: 'the page to show one topic' })
+        assert.ok(await node('1.3.4').isVisible())
+    })
 })
