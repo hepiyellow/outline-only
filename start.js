@@ -333,8 +333,11 @@ export async function startSession(request, { workspaceDirs, claudeCommand: conf
     let name = slug(label)
     for (let i = 2; hasTmuxSession(name); i++) name = `${slug(label).slice(0, 36)}-${i}`
     const env = project ? ['-e', `OUTLINE_PROJECT=${project}`] : []
-    // `--` ends claude's options, so the variadic --add-dir does not swallow the prompt.
-    execFileSync('tmux', ['new-session', '-d', '-s', name, '-c', cwd, '-x', '160', '-y', '45', ...env, claudeCommand(configured), ...args, '--', prompt])
+    // `--` ends claude's options, so the variadic --add-dir does not swallow the prompt. A tmux server whose own folder
+    // is gone (it was started from an app bundle since replaced) ignores `-c`, and claude would exit at once in a folder
+    // that does not exist: so claude changes to its folder itself, and a server this starts sits in the home folder.
+    const run = ['/bin/sh', '-c', 'cd -- "$0" && exec "$@"', cwd, claudeCommand(configured), ...args, '--', prompt]
+    execFileSync('tmux', ['new-session', '-d', '-s', name, '-c', cwd, '-x', '160', '-y', '45', ...env, ...run], { cwd: HOME })
     // What the outlines pane shows for the session until its outline appears (startedSessions): kept on the tmux
     // session itself, so it outlives a restart of this server and goes away with the session.
     const target = `=${name}:`
