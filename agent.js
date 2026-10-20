@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WORKFLOW_NAME, extractHeaders, renderPlain } from './outline.js'
-import { OpError, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, serializeOutline, userEntry } from './model.js'
+import { OpError, STAGE_NAME, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, ripple, serializeOutline, userEntry, userReopen, userStage } from './model.js'
 import { createActionLog } from './actions.js'
 import { isSessionName } from './terminal.js'
 import { isSessionId, localCommandsSince } from './transcript.js'
@@ -14,6 +14,9 @@ import { isSessionId, localCommandsSince } from './transcript.js'
 
 /** The folder of the outlines folder where each outline's ledger is kept: one JSON file per outline. */
 export const LEDGER_DIR = '.ledger'
+
+/** The folder of the outlines folder where each project's topic notes are kept: one markdown file per project. */
+export const TOPIC_NOTES_DIR = '.topic-notes'
 
 /** Most messages a ledger keeps. */
 const MAX_MESSAGES = 200
@@ -154,6 +157,34 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
 
     const readModel = (project, file) => parseOutline(fs.readFileSync(fileOf(project, file), 'utf8'))
 
+    /**
+     * A project's topic notes: how the user wants work divided into topics. The agent adds a line after each merge of
+     * topics it split, or a split the user rejected, and reads them before it makes topics; the user edits the file as
+     * they like.
+     */
+    const topicNotesOf = project => path.join(root, TOPIC_NOTES_DIR, `${project}.md`)
+    const readTopicNotes = project => {
+        try {
+            return fs.readFileSync(topicNotesOf(project), 'utf8').trim()
+        } catch {
+            return ''
+        }
+    }
+    function addTopicNotes(project, lines) {
+        if (!lines.length) return
+        const file = topicNotesOf(project)
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        const head = fs.existsSync(file) ? '' : `# Topic notes: ${project}\n\nHow the user wants work divided into topics. The agent adds a line after each merge of topics it split, or a split the user rejected, and reads them before it makes topics. Edit them as you like.\n\n`
+        fs.appendFileSync(file, head + lines.map(l => `- ${today()}: ${l}\n`).join(''))
+    }
+    /** What the agent is told of the project's topic notes, with where they are. */
+    const topicNotesText = project => {
+        const notes = readTopicNotes(project)
+        return notes
+            ? `Topic notes of the project "${project}" (${topicNotesOf(project)}): read them before you make topics or split one.\n${notes}`
+            : `The project "${project}" has no topic notes yet (${topicNotesOf(project)}): after the user merges topics you split, or rejects a split, add one with a note operation.`
+    }
+
     function writeModel(project, file, model) {
         // An outline has one writer, and in file mode it is the agent: writing the model would reformat the agent's file.
         if (model.headers.mode !== 'server') throw new Error(`${project}/${file} is in file mode: the server does not write it`)
@@ -228,7 +259,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of events) if (TICKS.includes(e.kind) && ledger.unacked[e.num]) ledger.unacked[e.num].told = true
         // A node ticked and unticked again says only where it ended up.
         const last = new Map()
-        for (const e of events) last.set(e.kind === 'run' || e.kind === 'renamed' ? `${e.kind}:${e.num}` : e.num, e)
+        for (const e of events) last.set(TICKS.includes(e.kind) ? e.num : `${e.kind}:${e.num}:${e.stage ?? ''}`, e)
         const by = kind => [...last.values()].filter(e => e.kind === kind)
         const refs = list => list.map(e => `${e.num} ${e.title}`).join('; ')
         const lines = []
@@ -237,6 +268,13 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         if (by('reopened').length) lines.push(`- took their approval back from ${refs(by('reopened'))}`)
         for (const e of by('run')) lines.push(`- pressed Run on ${e.num} ${e.title}: carry it out now, then finish it with its outcome`)
         for (const e of by('renamed')) lines.push(`- renamed the outline to "${e.title}"`)
+        for (const e of by('stage')) lines.push(`- turned ${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num} ${e.title}${e.on ? '' : ': it keeps its nodes, folded away, and asks nothing; adapt the topic to it'}`)
+        for (const e of by('reopened-stage')) lines.push(`- reopened ${e.num} ${e.title}: it is active again`)
+        for (const e of by('merged'))
+            lines.push(
+                `- merged the topic "${e.from}" into ${e.num} ${e.title}: its nodes are under the stages of ${e.num} now, with their links. Numbers changed: ${e.renumbered.join('; ')}. If you had split it off, add a line to the topic notes (a note operation) on what this says about how the user divides work.`,
+            )
+        for (const e of by('ripple')) lines.push(`- so ${e.title} changed, and what comes from it needs review: ${e.marks.join('; ')}`)
         return `On the page, since you were last told, the user:\n${lines.join('\n')}\nThe outline already shows this; do not record it again.`
     }
 
@@ -247,7 +285,12 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of ledger.events) if (TICKS.includes(e.kind)) last.set(e.num, e)
         const nums = kind => [...last.values()].filter(e => e.kind === kind).map(e => e.num).join(', ')
         const parts = [nums('approved') && `approved ${nums('approved')}`, nums('picked') && `picked ${nums('picked')}`, nums('reopened') && `took back ${nums('reopened')}`].filter(Boolean)
-        return parts.length ? `Ticked in the outline: ${parts.join('; ')}.` : ''
+        // What the user did to the stages, as each one ended up.
+        const stages = new Map()
+        for (const e of ledger.events) if (e.kind === 'stage' || e.kind === 'reopened-stage') stages.set(`${e.kind}:${e.num}:${e.stage}`, e)
+        const turned = [...stages.values()].map(e => (e.kind === 'stage' ? `${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num}` : `reopened ${e.num}`))
+        for (const e of ledger.events) if (e.kind === 'merged') turned.push(`"${e.from}" merged into ${e.num}`)
+        return [parts.length && `Ticked in the outline: ${parts.join('; ')}.`, turned.length && `Stages changed in the outline: ${turned.join('; ')}.`].filter(Boolean).join(' ')
     }
 
     const telling = new Map()
@@ -380,6 +423,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                           ? `Attached to this session's outline, which is not named yet. It is filed under the project "${found.project}".\nPage: ${urlOf(found)}\n${UNNAMED_NEXT}`
                           : `Reattached to the outline "${model.headers.title || found.file}", filed under the project "${found.project}". Its name is the user's to change: keep it.\nPage: ${urlOf(found)}`,
                     workflowText(model.headers.workflow),
+                    topicNotesText(found.project),
                     map ? `Map:\n${map}` : ledger.untitled ? '' : 'It has no nodes yet: add them with change.',
                     queueSection(model),
                     events,
@@ -397,6 +441,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                     ? `Opened the outline "${name}".\nPage: ${urlOf(created)}\n${where}\nIt is empty: build it from the conversation so far with one change, then give the user the page link.`
                     : `Opened an outline that is not named yet.\nPage: ${urlOf(created)}\n${where}\n${UNNAMED_NEXT}`,
                 workflowText(asked || DEFAULT_WORKFLOW),
+                topicNotesText(created.project),
             ),
         }
     }
@@ -488,6 +533,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         ledger.changedAt = changedAt
         writeLedger(at.project, at.file, ledger)
         writeModel(at.project, at.file, model)
+        addTopicNotes(at.project, result.topicNotes)
         // The action log: first what became of the numbers, then what the user decided in chat, by the numbers the
         // nodes have now.
         actionLog.renumber(at.project, at.file, result)
@@ -531,13 +577,16 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             notes.push(`${num} is left out of the queue: it has no pending action. The server lists the pending actions by itself (an open question, a task to run, a claim that asks for approval); to ask the user to approve a node, set ask on it.`)
         }
         const renumbered = [...result.renumbered].map(([from, to]) => `${from} -> ${to}`)
+        const marked = result.marked.map(n => `- ${n.num} ${n.title}`)
         const count = ops.length
         return {
             outline: `${at.project}/${at.file}`,
             text: sections(
                 `Applied ${count} operation${count === 1 ? '' : 's'}.`,
                 notes.length ? notes.map(n => `Note: ${n}`).join('\n') : '',
+                result.topicNotes.length ? `Added to the topic notes of "${at.project}" (${topicNotesOf(at.project)}): ${result.topicNotes.join(' ')}` : '',
                 renumbered.length ? `Numbers changed (use the new ones in chat, and update any node text that names the old ones): ${renumbered.join('; ')}` : '',
+                marked.length ? `This change reached what comes from it, marked as needing review, upstream first:\n${marked.join('\n')}\nChange each one that no longer holds (that clears its mark), and send holds { num } for each that still does.` : '',
                 events,
                 `Map:\n${mapText(model, result.touchedAll)}`,
                 queueSection(model),
@@ -604,6 +653,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             text: sections(
                 `This conversation is mirrored into the outline "${model.headers.title || at.file}" (${urlOf(at)}) with the outline tools: keep doing so after each answer, with one change call. Your picture of it did not survive: this is its map. Read a node before you update it.`,
                 model.headers.workflow ? workflowText(model.headers.workflow) : '',
+                topicNotesText(at.project),
                 map ? `Map:\n${map}` : 'It has no nodes yet.',
                 queueSection(model),
                 events,
@@ -615,12 +665,14 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
      * The user's ticks on the page (`set`: `{ num, approved }` per node) or a press of Run (`run`: a node number). Run
      * reaches the agent at once, ticks once the user has paused (`tellSoon`).
      */
-    async function act(project, file, { set, run }) {
+    async function act(project, file, { set, run, stage, reopen, merge }) {
         const model = readModel(project, file)
         const ledger = readLedger(project, file)
         const at = Date.now()
         if (set !== undefined) {
             const events = applyUserSet(model, set)
+            // An approval or a pick taken back reopens a decision: what was built on it needs review.
+            const ripples = events.filter(e => e.kind === 'reopened').map(e => ({ e, marked: ripple(model, [findNode(model, e.num)]) }))
             normalize(model)
             writeModel(project, file, model)
             actionLog.record(project, file, events.map(e => userEntry(model, e.num, { approved: 'approved', picked: 'picked', reopened: 'took-back' }[e.kind])), at)
@@ -629,7 +681,44 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                 // Pending on the page from this moment, until the agent acknowledges it.
                 ledger.unacked[e.num] = { kind: e.kind, title: e.title, told: false }
             }
+            for (const { e, marked } of ripples) if (marked.length) ledger.events.push({ at, kind: 'ripple', num: e.num, title: `${e.num} ${e.title}`, marks: marked.map(n => `${n.num} ${n.title}`) })
             if (events.length) tellSoon(project, file)
+        }
+        // A stage the user turned on or off, or a Discussion or Plan they reopened: an action of theirs, in the action log,
+        // which the agent is told of once the user pauses, as of ticks.
+        const staged = stage !== undefined ? userStage(model, stage) : reopen !== undefined ? userReopen(model, String(reopen)) : undefined
+        if (staged) {
+            normalize(model)
+            writeModel(project, file, model)
+            actionLog.record(project, file, [staged], at)
+            ledger.events.push({ at, kind: staged.what === 'reopened' ? 'reopened-stage' : 'stage', num: staged.num, title: staged.title, stage: staged.stage, on: staged.what === 'turned-on' })
+            tellSoon(project, file)
+        }
+        // Two topics the user merged: the server combines them as the agent's record of it would, and follows the
+        // numbers that changed everywhere it keeps them.
+        if (merge !== undefined) {
+            if (!merge || typeof merge !== 'object') throw new OpError('a merge is { num, into }')
+            let result
+            try {
+                result = applyOperations(model, [{ op: 'record', decision: 'merge', num: String(merge.num), into: String(merge.into) }], ledger.shown)
+            } catch (e) {
+                if (e instanceof OpError) e.message = e.message.replace(/^Operation 1 of 1 \(record[^)]*\): /, '')
+                throw e
+            }
+            // The node last touched is the agent's to mark, not the user's.
+            normalize(model)
+            const moved = num => result.renumbered.get(num) ?? num
+            const live = new Set(allNodes(model.nodes).map(n => n.num))
+            for (const item of ledger.events) item.num = moved(item.num)
+            ledger.unacked = Object.fromEntries(Object.entries(ledger.unacked).map(([num, tick]) => [moved(num), tick]).filter(([num]) => live.has(num)))
+            ledger.changedAt = Object.fromEntries(Object.entries(ledger.changedAt ?? {}).map(([num, t]) => [moved(num), t]).filter(([num]) => live.has(num)))
+            ledger.removed = (ledger.removed ?? []).map(t => ({ ...t, parent: t.parent && moved(t.parent) })).filter(t => !t.parent || live.has(t.parent))
+            writeModel(project, file, model)
+            actionLog.renumber(project, file, result, at)
+            actionLog.record(project, file, result.decisions.map(({ node, ...entry }) => ({ ...entry, num: node.num })), at)
+            const into = result.decisions[0]?.node
+            ledger.events.push({ at, kind: 'merged', num: into.num, title: into.title, from: result.decisions[0].from, renumbered: [...result.renumbered].map(([a, b]) => `${a} -> ${b}`) })
+            tellSoon(project, file)
         }
         let typed = false
         if (run !== undefined) {
@@ -679,11 +768,16 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         const told = active ? [] : Object.entries(ledger.unacked).filter(([, tick]) => tick.told)
         const model = readModel(at.project, at.file)
         const unplaced = model.queue.filter(item => !item.placed)
+        // The marks of ripples the turn left unaddressed: the turn is held open once over each.
+        const held = new Set(ledger.reviewHeld ?? [])
+        const markOf = n => n.id || n.num
+        const unreviewed = active ? [] : allNodes(model.nodes).filter(n => n.review && !held.has(markOf(n)))
+        if (unreviewed.length) ledger.reviewHeld = [...held, ...unreviewed.map(markOf)].slice(-500)
         if (active && unplaced.length) {
             for (const item of unplaced) item.placed = true
             writeModel(at.project, at.file, model)
         }
-        if (told.length || (!active && unplaced.length)) {
+        if (told.length || (!active && unplaced.length) || unreviewed.length) {
             if (text && !ledger.changed) ledger.held = text
             writeLedger(at.project, at.file, ledger)
             if (added) onMessages(at.project, at.file)
@@ -695,7 +789,10 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             const order = unplaced.length
                 ? `These pending actions have no place in the queue yet:\n${unplaced.map(item => `- ${item.num} [${item.kind}] ${item.label}`).join('\n')}\nThe order of the queue is yours to give. Before you end the turn, make one change call with a queue operation that lists the pending actions, most important first:\n${queueText(model)}`
                 : ''
-            return { text: `[outline "${headersOf(at).title || at.file}"] ${[ticks, order].filter(Boolean).join('\n\n')}` }
+            const review = unreviewed.length
+                ? `A change upstream reached these nodes, and they need review:\n${unreviewed.map(n => `- ${n.num} ${n.title}`).join('\n')}\nBefore you end the turn, change each one that no longer holds (that clears its mark), and send holds { num } for each that still does, in one change call.`
+                : ''
+            return { text: `[outline "${headersOf(at).title || at.file}"] ${[ticks, order, review].filter(Boolean).join('\n\n')}` }
         }
         const answer = ledger.held || text
         const posted = !ledger.changed && !!answer

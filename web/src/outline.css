@@ -108,7 +108,7 @@ html {
        title, as on a topic's head: the messages, the count of its children and its marks, and its buttons at the far
        right. */
     grid-template-columns: 48px 22px auto minmax(0, max-content) minmax(0, 1fr) auto auto auto auto;
-    grid-template-areas: 'ck tri num title . msg kc tags ask';
+    grid-template-areas: 'ck tri num title links msg kc tags ask';
     align-items: center;
     padding: 6px 0 6px 12px;
     border-bottom: 1px solid var(--border);
@@ -140,7 +140,7 @@ html {
     /* The first cell holds the approval box, 20px in. The triangle's place stays empty on a node without text, so that
        every row starts its number in one column. */
     grid-template-columns: 48px 22px auto minmax(0, max-content) minmax(0, 1fr) auto auto auto;
-    grid-template-areas: 'ck tri num title . msg tags ask' 'ck . diff diff diff diff diff diff' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
+    grid-template-areas: 'ck tri num title links msg tags ask' 'ck . diff diff diff diff diff diff' 'ck . pick pick pick pick pick pick' 'ck . body body body body body body';
     align-items: baseline;
     margin: 0 0 4px;
     padding-left: 12px;
@@ -668,3 +668,329 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
 .hist-head .num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .hist-body { padding: 0 0 2px 4px; color: var(--muted-foreground); }
 .hist-kids { padding-left: 16px; border-left: 1px solid var(--border); }
+
+/* A node's links, after its title: what it comes from and what comes from it, each number a click to that node. */
+.row > .link-chips { grid-area: links; justify-self: start; max-width: 100%; overflow: hidden; }
+/* Badges that do not fit beside the title are clipped, not drawn over the kind marks. */
+.row.leaf > .link-chips { align-self: start; margin-top: 11px; }
+.link-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+    font-size: 0.75rem;
+    font-weight: 400;
+}
+.link-chip {
+    padding: 0 6px;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+}
+.link-num {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+.link-num:hover { text-decoration-style: solid; }
+
+/* Past six levels a narrow window would run out of room: the nodes under a deep node are indented less. */
+@media (max-width: 720px) {
+    .group[data-deep] > .kids {
+        --indent: 10px;
+    }
+}
+
+/* The lifecycle (server mode): a topic's stage switches, and each stage as a row over its nodes. */
+.lc-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 6px 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.lc-bar-label {
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.stage-switches {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+.topic-head > .stage-switches { margin-left: 8px; }
+.stage-switch {
+    padding: 1px 8px;
+    border: 1px dashed var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    background: transparent;
+    cursor: pointer;
+}
+.stage-switch[aria-pressed='true'] {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--foreground) 30%, transparent);
+    color: var(--foreground);
+}
+.stage-switch[aria-pressed='true'][data-status='active'] { border-color: var(--current); }
+.stage-switch[aria-pressed='true'][data-status='done'] { border-color: var(--approved); color: var(--approved); }
+.stage-switch:disabled { cursor: default; }
+.stage-switch:not(:disabled):hover { background: color-mix(in srgb, var(--foreground) 6%, var(--background)); }
+
+.row.stage-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: var(--rh);
+    padding: 4px 6px 4px 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--foreground) 3%, var(--background));
+    font-size: 0.9em;
+    cursor: pointer;
+}
+.row.stage-head > .num { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.row.stage-head > .node-title { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85em; }
+.row.stage-head > .extras { margin-left: auto; }
+.stage-status {
+    padding: 0 6px;
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+}
+.stage-status[data-stage-status='active'] { color: var(--current); }
+.stage-status[data-stage-status='done'] { color: var(--approved); }
+.stage-reopen {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.7rem;
+}
+.stage-reopen:hover { color: var(--foreground); }
+.lc-stage[data-status='done'] > .stage-head { color: var(--settled); }
+/* The next stage, and a stage turned off, are dimmed; one turned off is folded away too, its nodes kept. */
+.lc-stage[data-next] > .stage-head,
+.lc-stage[data-status='off'] > .stage-head,
+.lc-stage[data-status='off'] > .kids {
+    opacity: 0.55;
+}
+.lc-stage[data-status='off'] > .stage-head > .node-title { text-decoration: line-through; }
+.lc-stage > .kids { padding: 0 0 4px var(--indent); }
+.stage-empty {
+    margin: 0;
+    padding: 6px 12px;
+    color: var(--muted-foreground);
+    font-size: 0.85em;
+    font-style: italic;
+}
+/* A topic's dependencies: the topics it waits for. */
+.waits-for {
+    flex: none;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--claim) 50%, transparent);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+/* What the lifecycle says of a node: it needs review (a change upstream reached it), and its soft flags. */
+.lc-badge {
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.lc-badge.review {
+    background: color-mix(in srgb, var(--claim) 16%, var(--background));
+    color: var(--foreground);
+}
+.lc-badge.flag {
+    border: 1px dashed var(--border);
+    color: var(--muted-foreground);
+}
+.lc-stage[data-status='needs-review'] > .stage-head .stage-status { color: var(--foreground); font-weight: 600; }
+
+/* Topic layouts and the stage view: segmented switches, and the plan items with what carries them out. */
+.lc-layout,
+.lc-view {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+.topic-head > .lc-layout { margin-left: 6px; }
+.lc-layout > button,
+.lc-view > button {
+    padding: 1px 8px;
+    border-radius: 6px;
+    color: var(--muted-foreground);
+}
+.lc-layout > button[aria-pressed='true'],
+.lc-view > button[aria-pressed='true'] {
+    background: color-mix(in srgb, var(--foreground) 8%, var(--background));
+    color: var(--foreground);
+}
+.lc-view {
+    display: flex;
+    gap: 4px;
+    padding: 8px 6px 8px 12px;
+}
+.lc-view > select {
+    margin-left: 6px;
+    padding: 1px 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--background);
+    font-size: 0.75rem;
+}
+.lc-carried { padding-left: var(--indent); }
+.lc-checks { padding-left: var(--indent); }
+.lc-task { position: relative; }
+.lc-badge.shared {
+    position: absolute;
+    top: 2px;
+    right: 6px;
+    z-index: 1;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+}
+.lc-topic-label {
+    padding: 10px 12px 2px;
+    color: var(--muted-foreground);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+/* A topic's heading keeps its title on one line: its switches wrap below it when the row runs out of room. */
+.lc-topic > .topic-head { flex-wrap: wrap; row-gap: 4px; }
+.lc-topic > .topic-head > .node-title { flex: none; max-width: 100%; }
+.lc-topic > .topic-head > .lc-layout { flex-wrap: nowrap; }
+.lc-topic > .topic-head > .asks { margin-left: auto; }
+
+/* The overview: a node's trace in a panel at the side of the outline, one band per stage from the top down. On a
+   narrow window it covers the outline. */
+.overview {
+    position: fixed;
+    top: var(--barh);
+    right: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    width: min(480px, 46vw);
+    border-left: 1px solid var(--border);
+    background: var(--background);
+    box-shadow: -8px 0 24px color-mix(in srgb, var(--foreground) 8%, transparent);
+    animation: overview-in 0.18s ease-out;
+}
+@keyframes overview-in {
+    from { transform: translateX(40px); opacity: 0; }
+}
+@media (max-width: 720px) {
+    .overview { left: 0; width: auto; border-left: 0; }
+}
+.overview-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+.overview-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-title .num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.overview-back { display: none; }
+@media (max-width: 720px) {
+    .overview-back { display: inline-flex; }
+}
+.overview-empty { margin: 0; padding: 10px 12px; color: var(--muted-foreground); font-size: 0.85rem; }
+.overview-canvas {
+    position: relative;
+    flex: 1;
+    overflow: auto;
+    padding: 6px 12px 16px;
+}
+.overview-lines {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+}
+.overview-lines path {
+    fill: none;
+    stroke: color-mix(in srgb, var(--foreground) 30%, transparent);
+    stroke-width: 1.5;
+}
+.overview-band {
+    position: relative;
+    padding: 8px 0 14px;
+    border-bottom: 1px dashed var(--border);
+}
+.overview-band:last-child { border-bottom: 0; }
+.overview-band-label {
+    margin-bottom: 6px;
+    color: var(--muted-foreground);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.overview-boxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 10px;
+}
+.overview-box {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    max-width: 200px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--background);
+    font-size: 0.8rem;
+    text-align: left;
+}
+.overview-box:hover { border-color: color-mix(in srgb, var(--foreground) 40%, transparent); }
+.overview-box.self {
+    border: 2px solid var(--current);
+    font-weight: 600;
+}
+.overview-box .num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.overview-box-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.overview-box-topic { margin-top: 2px; color: var(--muted-foreground); font-size: 0.7rem; }
+.overview-count {
+    padding: 4px 10px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--muted-foreground);
+    font-size: 0.8rem;
+}
+.lc-merge {
+    max-width: 9rem;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--background);
+    color: var(--muted-foreground);
+    font-size: 0.72rem;
+    font-weight: 500;
+}

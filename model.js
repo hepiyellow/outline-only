@@ -1,12 +1,17 @@
 import crypto from 'node:crypto'
-import { HEAD_RE, OPTION_RE, TAG_RE, TRAIL_MARK, extractHeaders } from './outline.js'
+import { HEAD_RE, OPTION_RE, TAG_RE, TRAIL_MARK, VALUE_TAG, extractHeaders } from './outline.js'
 
 // The outline as the server owns it (docs/adr/0003): the markdown file read into nodes, the operations an agent's
 // `change` and the user's clicks apply to them, the rules the server keeps on its own (numbers, roll-up, the current
 // node, the queue), and the file written back. outline.js stays the one reader for the page.
 
-/** Nodes nest at most six levels deep (a markdown heading has no seventh). */
-const MAX_LEVEL = 6
+/**
+ * Nodes nest at most ten levels deep. A markdown heading has six: past them a node is written with `######`, and its
+ * level is read from its full number (`headingLevel`).
+ */
+export const MAX_LEVEL = 10
+/** The most `#` signs a heading has. */
+const MAX_HASHES = 6
 const NUM_RE = /^\d+(\.\d+)*$/
 
 /** An operation the server refuses: why, and what to do about it. `text` is the node as it is now, for a stale update. */
@@ -34,8 +39,17 @@ function walkLines(lines, each) {
 
 const HEADING = /^(#{1,6}) +(.*)$/
 
+/**
+ * A heading's level: the count of its `#` signs, unless it has six and a number deeper than that, which a node past
+ * the sixth level has: then the depth of its number.
+ */
+export function headingLevel(hashes, num) {
+    const depth = num ? num.split('.').length : 0
+    return hashes === MAX_HASHES && depth > MAX_HASHES ? depth : hashes
+}
+
 function blankNode(level) {
-    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', text: '', summary: '', recommendation: '', taskLine: '', children: [] }
+    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], topic: false, stages: [], depends: [], stage: '', stageDone: false, planItem: false, review: false, text: '', summary: '', recommendation: '', taskLine: '', children: [] }
 }
 
 /** A heading line's number, tags and title, as a node without text. */
@@ -47,7 +61,17 @@ function headingNode(content, level) {
     for (let t; (t = rest.match(TAG_RE)); rest = rest.slice(t[0].length)) {
         const name = t[1].toLowerCase()
         const letter = name.match(OPTION_RE)
-        if (letter) node.option = letter[1].toUpperCase()
+        const value = name.match(VALUE_TAG)
+        if (value?.[1] === 'id') node.id = value[2]
+        else if (value?.[1] === 'links') node.links = value[2].split(',').filter(Boolean)
+        else if (value?.[1] === 'stages') node.stages = value[2].split(',').filter(Boolean)
+        else if (value?.[1] === 'stage') node.stage = value[2]
+        else if (value?.[1] === 'depends') node.depends = value[2].split(',').filter(Boolean)
+        else if (name === 'topic') node.topic = true
+        else if (name === 'stage-done') node.stageDone = true
+        else if (name === 'plan-item') node.planItem = true
+        else if (name === 'needs-review') node.review = true
+        else if (letter) node.option = letter[1].toUpperCase()
         else if (name === 'user-approved' || name === 'approved') node.approved = true
         else if (name === 'agent-claim' || name === 'claim') node.claim = true
         else if (name === 'asks-approval') node.asks = true
@@ -106,6 +130,7 @@ export function parseOutline(text) {
         const m = !inFence && line.match(HEADING)
         if (!m) return stack.at(-1).lines.push(line)
         const node = headingNode(m[2], m[1].length)
+        node.level = headingLevel(m[1].length, node.num)
         node.lines = []
         while (stack.at(-1).level >= node.level) stack.pop()
         stack.at(-1).children.push(node)
@@ -142,9 +167,18 @@ function headingLine(node) {
         node.task === 'proposed' && '@task',
         node.task === 'done' && '@task-done',
         node.task === 'failed' && '@task-failed',
+        node.topic && '@topic',
+        node.topic && `@stages:${node.stages.join(',')}`,
+        node.depends.length && `@depends:${node.depends.join(',')}`,
+        node.stage && `@stage:${node.stage}`,
+        node.stageDone && '@stage-done',
+        node.planItem && '@plan-item',
+        node.review && '@needs-review',
+        node.id && `@id:${node.id}`,
+        node.links.length && `@links:${node.links.join(',')}`,
     ].filter(Boolean)
     const num = node.num ? `${node.num}${node.level === 1 ? '.' : ''}` : ''
-    return `${'#'.repeat(node.level)} ${[num, ...tags, node.title].filter(Boolean).join(' ')}`
+    return `${'#'.repeat(Math.min(node.level, MAX_HASHES))} ${[num, ...tags, node.title].filter(Boolean).join(' ')}`
 }
 
 /** The model as the outline's text: what the page's reader (outline.js) and the Markdown tab read. */
@@ -199,6 +233,333 @@ function indexOf(model) {
 
 export const findNode = (model, num) => indexOf(model).get(num)?.node
 
+/** Every node that has an id, by its id. */
+function byId(model) {
+    const ids = new Map()
+    for (const n of allNodes(model.nodes)) if (n.id) ids.set(n.id, n)
+    return ids
+}
+
+/** An id: six letters and digits, at least one of them a letter, so that it never reads as a node number. */
+const ID_RE = /^(?=[0-9]*[a-z])[a-z0-9]{6}$/
+const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+/** A new id that no node of the outline has. */
+function newId(taken) {
+    for (;;) {
+        const id = [...crypto.randomBytes(6)].map(b => ID_CHARS[b % ID_CHARS.length]).join('')
+        if (ID_RE.test(id) && !taken.has(id)) return id
+    }
+}
+
+/**
+ * The node's id, given now when it has none. A node gets its id the first time a link points at it: one nothing links
+ * to needs none, so an outline without links is written as it was. Once given, an id stays with the node through
+ * every move, removal and renumbering.
+ */
+function idOf(model, node) {
+    node.id ||= newId(byId(model))
+    return node.id
+}
+
+/** The nodes a node comes from, by its links, as they are now. */
+export function linkedFrom(model, node, ids = byId(model)) {
+    return node.links.map(id => ids.get(id)).filter(Boolean)
+}
+
+/** The nodes that come from a node: those whose links hold its id. */
+export function linkedTo(model, node) {
+    return node.id ? allNodes(model.nodes).filter(n => n.links.includes(node.id)) : []
+}
+
+/** Whether following links upstream from the node with id `from` reaches the one with id `to`. */
+function reaches(ids, from, to, seen = new Set()) {
+    if (from === to) return true
+    if (seen.has(from)) return false
+    seen.add(from)
+    return (ids.get(from)?.links ?? []).some(id => reaches(ids, id, to, seen))
+}
+
+/** A node's links as the agent reads them: the numbers of the nodes it comes from, and of those that come from it. */
+function linkLine(model, node) {
+    const from = linkedFrom(model, node).map(n => n.num)
+    const to = linkedTo(model, node).map(n => n.num)
+    return [from.length && `from ${from.join(', ')}`, to.length && `used by ${to.join(', ')}`].filter(Boolean).join('; ')
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The lifecycle (docs/adr/0005): topics, their stages, and where each node sits
+
+/** The stages of the lifecycle, in its order. A stage's number under its topic is its place here: Discussion .1 to Preservation .5. */
+export const STAGES = ['discussion', 'plan', 'implementation', 'verification', 'preservation']
+/** The stages where something is done: the only ones that hold tasks. A check is a task in Verification. */
+const DOING = ['implementation', 'verification', 'preservation']
+export const STAGE_NAME = { discussion: 'Discussion', plan: 'Plan', implementation: 'Implementation', verification: 'Verification', preservation: 'Preservation' }
+const stageIndex = name => STAGES.indexOf(name)
+const stageNumber = (topicNum, name) => `${topicNum}.${stageIndex(name) + 1}`
+/** A topic's heading or a stage's: the outline's structure, which has no kind and takes no approval. */
+const isStructure = node => node.topic || !!node.stage
+
+/**
+ * Whether the outline has its topics written. One that does not is one topic with Discussion alone, neither of them
+ * written: its nodes are the outline's top level, as in every outline from before topics.
+ */
+export const hasTopics = model => model.nodes.some(n => n.topic)
+
+/** Every topic, parents before the topics placed inside their stages. */
+const allTopics = model => allNodes(model.nodes).filter(n => n.topic)
+
+/**
+ * Where a node sits: the topic and the stage it is in, the nearest of each above it (a topic's heading sits in none of
+ * its own stages). In an outline without topics, every node sits in the one topic's Discussion: `topic` and `stage`
+ * are then undefined.
+ */
+function placeOf(model, num, index = indexOf(model)) {
+    const parts = num.split('.')
+    let topic
+    let stage
+    for (let i = 1; i < parts.length; i++) {
+        const n = index.get(parts.slice(0, i).join('.'))?.node
+        if (n?.topic) {
+            topic = n
+            stage = undefined
+        } else if (n?.stage) stage = n
+    }
+    return { topic, stage, name: stage?.stage ?? (topic ? '' : 'discussion') }
+}
+
+/** Each node's stage by its number: the name of the stage it sits in ('' for a topic's heading). */
+function stagesByNum(model) {
+    const out = new Map()
+    const walk = (nodes, name) =>
+        nodes.forEach(n => {
+            const here = n.topic ? '' : n.stage || name
+            out.set(n.num, n.stage ? '' : here)
+            walk(n.children, here)
+        })
+    walk(model.nodes, hasTopics(model) ? '' : 'discussion')
+    return out
+}
+
+/** The nodes a stage holds, without the nodes of the topics placed inside it, which have stages of their own. */
+function inStage(stage, out = []) {
+    for (const n of stage.children) {
+        if (n.topic) continue
+        out.push(n)
+        inStage(n, out)
+    }
+    return out
+}
+
+/** The heading of a stage, as a topic holds it. */
+function stageHeading(name, topicNum, level) {
+    const node = blankNode(level)
+    node.num = stageNumber(topicNum, name)
+    node.stage = name
+    node.title = STAGE_NAME[name]
+    return node
+}
+
+/**
+ * Gives a topic a heading for each of its stages that is on, in the lifecycle's order, and drops the heading of a stage
+ * that is off and holds nothing. A stage turned off that holds nodes keeps its heading, and them.
+ */
+function fitStages(topic) {
+    const kept = topic.children.filter(c => c.stage && (topic.stages.includes(c.stage) || c.children.length))
+    for (const name of topic.stages) if (!kept.some(c => c.stage === name)) kept.push(stageHeading(name, topic.num, topic.level + 1))
+    topic.children = kept.sort((a, b) => stageIndex(a.stage) - stageIndex(b.stage))
+}
+
+/**
+ * Where a stage of a topic stands: `off` (turned off, its nodes kept), `not-started` (on, and it holds no node yet),
+ * `active`, or `done`. Implementation, Verification and Preservation are done once every task in them is, with their
+ * progress (`done` of `total` tasks); Discussion and Plan once the agent said so. A stage that holds a node a ripple
+ * reached `needs-review`, whatever else it is.
+ */
+export function stageStatus(topic, stage) {
+    if (!topic.stages.includes(stage.stage)) return { status: 'off' }
+    const held = inStage(stage)
+    if (!stage.children.length) return { status: 'not-started' }
+    // A node a ripple reached: the stage needs review, whatever else it is.
+    const review = held.some(n => n.review)
+    if (!DOING.includes(stage.stage)) return { status: review ? 'needs-review' : stage.stageDone ? 'done' : 'active' }
+    const tasks = held.filter(n => n.task)
+    const done = tasks.filter(n => n.task === 'done').length
+    return { status: review ? 'needs-review' : tasks.length && done === tasks.length ? 'done' : 'active', progress: { done, total: tasks.length } }
+}
+
+/** The topic a node sits in: the nearest above it (a topic's heading sits in its own). */
+function topicOf(model, num, index = indexOf(model)) {
+    const node = index.get(num)?.node
+    return node?.topic ? node : placeOf(model, num, index).topic
+}
+
+/**
+ * Each topic's dependencies, by its number: the numbers of the topics it waits for. Those the agent set (`@depends:`),
+ * and those its links make: a node of one topic that links into another makes its topic wait for that one, unless one
+ * of the two holds the other (a subtopic's link to a decision its Discussion shares is not one).
+ */
+export function dependenciesOf(model) {
+    const index = indexOf(model)
+    const ids = byId(model)
+    const out = new Map(allTopics(model).map(t => [t.num, new Set(t.depends.map(id => ids.get(id)?.num).filter(Boolean))]))
+    for (const n of allNodes(model.nodes)) {
+        if (!n.links.length) continue
+        const from = topicOf(model, n.num, index)
+        if (!from) continue
+        for (const target of linkedFrom(model, n, ids)) {
+            const to = topicOf(model, target.num, index)
+            if (!to || to === from || from.num.startsWith(`${to.num}.`) || to.num.startsWith(`${from.num}.`)) continue
+            out.get(from.num).add(to.num)
+        }
+    }
+    return new Map([...out].map(([num, on]) => [num, [...on].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))]))
+}
+
+/**
+ * A ripple: marks every node that comes from the nodes given, through link after link, as needing review, and returns
+ * the nodes it marked, upstream first (nearest first, then in outline order). The nodes given are not marked: they are
+ * what changed. A node marked gets an id, so that the turn-end hook can tell it apart through renumbering.
+ */
+export function ripple(model, from) {
+    const order = new Map(allNodes(model.nodes).map((n, i) => [n, i]))
+    const reached = new Set(from)
+    const marked = []
+    for (let front = [...from]; front.length; ) {
+        const next = []
+        for (const n of front) for (const m of linkedTo(model, n)) if (!reached.has(m)) reached.add(m) && next.push(m)
+        next.sort((a, b) => order.get(a) - order.get(b))
+        for (const m of next) {
+            if (!m.review) marked.push(m)
+            m.review = true
+            idOf(model, m)
+        }
+        front = next
+    }
+    return marked
+}
+
+/** What each soft flag says, in a few words. */
+export const FLAG_TEXT = {
+    unplanned: 'nothing in an active Plan comes from this decision',
+    'no-decision': 'this plan item comes from no decision',
+    'unapproved-claim': 'built on a claim the user has not approved',
+    'no-plan-item': 'this task carries out no plan item',
+    unchecked: 'no check covers this task',
+}
+
+/**
+ * The soft flags of an outline with topics, by node number: what the lifecycle expects and does not find. They are
+ * never refused, and ask the user nothing:
+ * - `unplanned`: a decision nothing in an active Plan comes from, when its topic's Plan is active
+ * - `no-decision`: a plan item that comes from no decision, while its topic's Discussion is on
+ * - `unapproved-claim`: a plan item built on a claim the user has not approved
+ * - `no-plan-item`: a task in Implementation that carries out no plan item, while Plan is on
+ * - `unchecked`: a task in Implementation that no check covers, while Verification is on
+ */
+export function softFlags(model) {
+    const out = new Map()
+    if (!hasTopics(model)) return out
+    const index = indexOf(model)
+    const places = stagesByNum(model)
+    const ids = byId(model)
+    const flag = (num, what) => out.set(num, [...(out.get(num) ?? []), what])
+    const isDecision = n => {
+        if (places.get(n.num) !== 'discussion' || n.task || isStructure(n)) return false
+        const parent = index.get(n.num)?.parent
+        if (parent && isQuestion(parent)) return n.approved
+        return !n.children.length && ownStatus(n) !== 'open'
+    }
+    for (const n of allNodes(model.nodes)) {
+        if (isStructure(n)) continue
+        const topic = placeOf(model, n.num, index).topic
+        const on = name => topic.stages.includes(name)
+        const statusOf = name => {
+            const stage = topic.children.find(c => c.stage === name)
+            return stage && stageStatus(topic, stage).status
+        }
+        const from = linkedFrom(model, n, ids)
+        const to = linkedTo(model, n)
+        if (isDecision(n) && on('plan') && statusOf('plan') === 'active' && !to.some(m => places.get(m.num) === 'plan')) flag(n.num, 'unplanned')
+        if (n.planItem) {
+            if (on('discussion') && !from.some(isDecision)) flag(n.num, 'no-decision')
+            if (from.some(m => m.claim && !m.approved && !m.option)) flag(n.num, 'unapproved-claim')
+        }
+        if (n.task && places.get(n.num) === 'implementation') {
+            if (on('plan') && !from.some(m => m.planItem)) flag(n.num, 'no-plan-item')
+            if (on('verification') && !to.some(m => m.task && places.get(m.num) === 'verification')) flag(n.num, 'unchecked')
+        }
+    }
+    return out
+}
+
+/** A loop of dependencies, as the topics' numbers from one round to the same (`1, 2, 1`), or undefined when there is none. */
+function dependencyLoop(deps) {
+    const state = new Map()
+    const path = []
+    const visit = num => {
+        if (state.get(num) === 'done') return undefined
+        if (state.get(num) === 'on') return [...path.slice(path.indexOf(num)), num]
+        state.set(num, 'on')
+        path.push(num)
+        for (const next of deps.get(num) ?? []) {
+            const loop = visit(next)
+            if (loop) return loop
+        }
+        path.pop()
+        state.set(num, 'done')
+        return undefined
+    }
+    for (const num of deps.keys()) {
+        const loop = visit(num)
+        if (loop) return loop
+    }
+    return undefined
+}
+
+/**
+ * The lifecycle as the page and the map show it: each topic (`topics`, by number: its id, title, the stages on and the
+ * topics it waits for)
+ * and each stage heading (`stages`, by number: its topic, name, whether it is on, its status and progress, and `next`
+ * on the first stage of a topic that is on and not started yet), and the nodes that need review or have soft flags
+ * (`nodes`, by number). Empty for an outline without topics, save the marks.
+ */
+export function lifecycleOf(model) {
+    const deps = dependenciesOf(model)
+    const topics = {}
+    const stages = {}
+    const walk = topic => {
+        topics[topic.num] = { id: topic.id, title: topic.title, stages: [...topic.stages], waitsFor: deps.get(topic.num) ?? [] }
+        let next = false
+        for (const stage of topic.children) {
+            if (!stage.stage) continue
+            const entry = { topic: topic.num, name: stage.stage, on: topic.stages.includes(stage.stage), ...stageStatus(topic, stage) }
+            if (entry.status === 'not-started' && !next) next = entry.next = true
+            stages[stage.num] = entry
+            for (const n of stage.children) if (n.topic) walk(n)
+        }
+    }
+    model.nodes.filter(n => n.topic).forEach(walk)
+    // The nodes a ripple reached, and those with soft flags.
+    const nodes = {}
+    for (const n of allNodes(model.nodes)) if (n.review) nodes[n.num] = { review: true }
+    for (const [num, list] of softFlags(model)) nodes[num] = { ...nodes[num], flags: list }
+    return { topics, stages, nodes }
+}
+
+/** A list of stages as the agent gives it: known names, each once, in the lifecycle's order (`ordered`), at least one. */
+function checkStages(value, where, ordered = true) {
+    const list = `${STAGES.join(', ')}`
+    if (!Array.isArray(value) || !value.length) throw new OpError(`The stages of ${where} are not a list of stages.`, `Give stages as a list of the stages that are on, from: ${list}.`)
+    value.forEach((name, i) => {
+        if (!STAGES.includes(name)) throw new OpError(`${JSON.stringify(name)} is not a stage.`, `The stages are ${list}, in that order.`)
+        if (value.indexOf(name) !== i) throw new OpError(`The stages of ${where} list ${name} twice.`, 'Each stage is on once.')
+        if (ordered && i && stageIndex(name) < stageIndex(value[i - 1]))
+            throw new OpError(`The stages of ${where} are out of order: ${name} comes after ${value[i - 1]}.`, `Stages never go backwards: list them in the lifecycle's order, ${list}.`)
+    })
+    return [...value].sort((a, b) => stageIndex(a) - stageIndex(b))
+}
+
 /** A question with its options under it (as outline.js `isQuestion`). */
 export const isQuestion = node => node.children.length > 0 && (node.question || node.children.some(c => c.option))
 
@@ -230,14 +591,22 @@ export function statusOf(node) {
 
 const label = node => `${node.num} ${node.option ? `(${node.option}) ` : ''}${node.title}`
 
-/** What a node is, in the glossary's words, for the map and for reads. */
-function describe(node, parent) {
+/** What a node is, in the glossary's words, for the map and for reads; `waits`, a topic's dependencies; `flags`, its soft flags. */
+function describe(node, parent, waits, flags) {
+    if (node.topic) return `topic, stages on: ${node.stages.join(', ')}${waits?.length ? `; waits for ${waits.join(', ')}` : ''}`
+    if (node.stage && parent?.topic) {
+        const { status, progress } = stageStatus(parent, node)
+        return ['stage', status.replace('-', ' '), progress && `${progress.done} of ${progress.total} tasks done`].filter(Boolean).join(', ')
+    }
     const parts = []
+    if (node.planItem) parts.push('plan item')
     if (parent && isQuestion(parent)) parts.push(node.approved ? 'option, picked' : node.recommended ? 'option, recommended' : 'option')
     else if (isQuestion(node)) parts.push(`question, ${{ approved: 'answered', claim: 'has a recommendation', open: 'open' }[questionStatus(node)]}`)
     else parts.push({ approved: 'user-approved', claim: 'claim', open: 'open' }[ownStatus(node)])
     if (node.task) parts.push({ proposed: 'task', done: 'task done', failed: 'task failed' }[node.task])
     if (node.asks && !node.approved) parts.push('asks approval')
+    if (node.review) parts.push('needs review')
+    if (flags?.length) parts.push(`flags: ${flags.map(f => FLAG_TEXT[f]).join('; ')}`)
     return parts.join(', ')
 }
 
@@ -250,6 +619,9 @@ const MAP_ALL = 80
  */
 export function mapText(model, around = []) {
     const index = indexOf(model)
+    const ids = byId(model)
+    const deps = hasTopics(model) ? dependenciesOf(model) : new Map()
+    const flags = softFlags(model)
     const total = allNodes(model.nodes).length
     const shown = new Set()
     if (total > MAP_ALL) {
@@ -265,11 +637,12 @@ export function mapText(model, around = []) {
     const walk = (nodes, parent, depth) => {
         let hidden = 0
         for (const n of nodes) {
-            if (total > MAP_ALL && depth > 0 && !shown.has(n.num)) {
+            if (total > MAP_ALL && depth > 0 && !shown.has(n.num) && !isStructure(n)) {
                 hidden += allNodes([n]).length
                 continue
             }
-            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent)}]${n.current ? ' <- current' : ''}`)
+            const from = linkedFrom(model, n, ids).map(l => l.num)
+            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent, deps.get(n.num), flags.get(n.num))}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
             walk(n.children, n, depth + 1)
         }
         if (hidden) lines.push(`${'  '.repeat(depth)}… ${hidden} more under ${parent.num} (read ${parent.num} to see them)`)
@@ -278,9 +651,11 @@ export function mapText(model, around = []) {
     return lines.join('\n')
 }
 
-/** One node in full, as `read` returns it. */
-function nodeText(node, parent) {
-    const lines = [`${label(node)} [${describe(node, parent)}]`]
+/** One node in full, as `read` returns it, with its links by the numbers the nodes have now. */
+function nodeText(model, node, parent) {
+    const lines = [`${label(node)} [${describe(node, parent, node.topic ? dependenciesOf(model).get(node.num) : undefined, softFlags(model).get(node.num))}]`]
+    const links = linkLine(model, node)
+    if (links) lines.push(`Links: ${links}`)
     if (node.text) lines.push(node.text)
     if (node.summary) lines.push(`Summary: ${node.summary}`)
     if (node.recommendation) lines.push(`Recommendation: ${node.recommendation}`)
@@ -298,7 +673,7 @@ export function readText(model, num = '') {
     const walk = (nodes, parent) =>
         nodes.forEach(n => {
             shown.push(n)
-            blocks.push(nodeText(n, parent))
+            blocks.push(nodeText(model, n, parent))
             walk(n.children, n)
         })
     if (entry) walk([entry.node], entry.parent)
@@ -353,6 +728,12 @@ export function pendingActions(model) {
     const walk = (nodes, parent) => {
         const options = !!parent && isQuestion(parent)
         for (const n of nodes) {
+            // A stage turned off asks nothing; a topic's heading and a stage's ask nothing themselves.
+            if (n.stage && parent?.topic && !parent.stages.includes(n.stage)) continue
+            if (isStructure(n)) {
+                walk(n.children, n)
+                continue
+            }
             if (options && !n.approved) continue
             const kind = options ? (n.task && n.task !== 'done' ? 'run' : '') : pendingKind(n)
             if (kind) out.push({ num: n.num, kind })
@@ -393,6 +774,11 @@ export function normalize(model, touched = '') {
                 c.option = LETTERS[i] ?? 'Z'
             })
             node.approved = node.children.some(c => c.approved)
+            return
+        }
+        // The outline's structure has no status of its own.
+        if (isStructure(node)) {
+            node.approved = node.claim = false
             return
         }
         // An option's tick is the user's pick of it, whatever stands under it.
@@ -475,8 +861,37 @@ function checkAsk(value, node, option, where) {
     return value
 }
 
-/** A new node from an `add` (or one of its children, or an option of its question). */
-function buildNode(spec, num, level, option = '') {
+/**
+ * Sets a node's links from what the agent gave: node numbers (or ids), stored as ids. A link names a node the node
+ * comes from, so it may not name the node itself, a node that is not there, or one that already comes from it.
+ */
+function setLinks(model, node, links, where) {
+    if (isStructure(node)) throw new OpError(`${where} is ${node.topic ? 'a topic' : 'a stage'}, which has no links.`, 'Links are between nodes: give them to the nodes in it.')
+    if (!Array.isArray(links)) throw new OpError(`The links of ${where} are not a list.`, 'Pass links: ["2.1", …]: the numbers of the nodes it comes from.')
+    const index = indexOf(model)
+    const ids = byId(model)
+    const targets = []
+    for (const ref of links) {
+        const target = isText(ref) && NUM_RE.test(ref) ? index.get(ref)?.node : isText(ref) && ID_RE.test(ref) ? ids.get(ref) : undefined
+        if (!target) throw new OpError(`${where} links to ${JSON.stringify(ref)}, and there is no such node.`, `A link names a node this one comes from, by its number. The nodes are:\n${mapText(model)}`)
+        if (target === node) throw new OpError(`${where} links to itself.`, 'A link names another node: one this node comes from.')
+        if (isStructure(target))
+            throw new OpError(`${where} links to ${target.num}, which is ${target.topic ? 'a topic' : 'a stage'}.`, 'A link names a node: link to the nodes in it that this one comes from.')
+        if (!targets.includes(target)) targets.push(target)
+    }
+    // Nothing links to a node without an id yet, so a link from it cannot close a loop.
+    if (node.id)
+        for (const target of targets)
+            if (target.links.some(id => reaches(ids, id, node.id)))
+                throw new OpError(
+                    `A link from ${where} to ${target.num} would close a loop: ${target.num} already comes from ${node.num}, through its links.`,
+                    `Links point upstream only, to what a node comes from. Drop this link, or take ${target.num}'s link to ${node.num} away first if it is the one that is wrong.`,
+                )
+    node.links = targets.map(t => idOf(model, t))
+}
+
+/** A new node from an `add` (or one of its children, or an option of its question). `later` collects the links to set once it is in the outline. */
+function buildNode(spec, num, level, option = '', later = []) {
     const where = `node ${num}`
     if (!spec || typeof spec !== 'object') throw new OpError(`${where} is not an object.`)
     if (level > MAX_LEVEL) throw new OpError(`${where} would be ${level} levels deep; nodes nest at most ${MAX_LEVEL}.`, 'Write it as bullets in its parent’s text, or add it higher up.')
@@ -509,19 +924,27 @@ function buildNode(spec, num, level, option = '') {
         node.text = [node.text, outcome].filter(Boolean).join('\n\n')
     }
     if (node.claim && node.task) throw new OpError(`${where} is added as a claim and as a task.`, `${ONE_KIND}: add the claim, and the task as a node of its own beside it.`)
+    if (spec.plan !== undefined) {
+        if (typeof spec.plan !== 'boolean') throw new OpError(`The plan of ${where} is ${JSON.stringify(spec.plan)}.`, 'plan is true or false.')
+        if (spec.plan && node.task) throw new OpError(`${where} is added as a plan item and as a task.`, 'A plan item says what will be done; the task that does it is a node of its own in Implementation, linked to it.')
+        if (spec.plan && spec.options !== undefined) throw new OpError(`${where} is added as a plan item and as a question.`, 'Ask the question in a node of its own; the plan item links to the option the user picks.')
+        if (spec.plan && option) throw new OpError(`${where} is an option, and an option is not a plan item.`, 'Add the plan item after the user picked, linked to the option.')
+        node.planItem = spec.plan
+    }
     if (spec.ask !== undefined) node.asks = checkAsk(spec.ask, node, option, where)
     if (option) node.recommended = !!spec.recommended
     else if (spec.recommended) throw new OpError(`${where} is marked recommended, and it is not an option.`, 'For a recommendation on a node that is not a choice, use the recommendation field.')
+    if (spec.links !== undefined) later.push({ node, links: spec.links, where })
     if (spec.options !== undefined) {
         if (!Array.isArray(spec.options) || spec.options.length < 2) throw new OpError(`The question ${num} needs at least two options.`, 'Give options as a list of { title, text }.')
         if (spec.children?.length) throw new OpError(`The question ${num} has both options and children.`, 'A question’s children are its options.')
         if (spec.options.filter(o => o?.recommended).length > 1) throw new OpError(`The question ${num} recommends more than one option.`, 'Recommend at most one.')
         if (spec.options.length > LETTERS.length) throw new OpError(`The question ${num} has too many options.`)
         node.question = true
-        node.children = spec.options.map((o, i) => buildNode(o, `${num}.${i + 1}`, level + 1, LETTERS[i]))
+        node.children = spec.options.map((o, i) => buildNode(o, `${num}.${i + 1}`, level + 1, LETTERS[i], later))
     } else if (spec.children !== undefined) {
         if (!Array.isArray(spec.children)) throw new OpError(`The children of ${num} are not a list.`)
-        node.children = spec.children.map((c, i) => buildNode(c, `${num}.${i + 1}`, level + 1))
+        node.children = spec.children.map((c, i) => buildNode(c, `${num}.${i + 1}`, level + 1, '', later))
     }
     return node
 }
@@ -536,7 +959,8 @@ function renumber(node, num, level, map) {
     if (node.num && node.num !== num) map.set(node.num, num)
     node.num = num
     node.level = level
-    node.children.forEach((c, i) => renumber(c, `${num}.${i + 1}`, level + 1, map))
+    // A topic's stages keep their place in the lifecycle as their number; every other node is numbered in order.
+    node.children.forEach((c, i) => renumber(c, c.stage ? stageNumber(num, c.stage) : `${num}.${i + 1}`, level + 1, map))
 }
 
 const depthOf = node => 1 + Math.max(0, ...node.children.map(depthOf))
@@ -547,12 +971,17 @@ const depthOf = node => 1 + Math.max(0, ...node.children.map(depthOf))
  * caller applies the operations to a copy, so a refused change leaves nothing behind.
  *
  * Returns what the result reports: the node last touched, notes, the numbers that changed, the messages to post, what
- * was taken out (`taken`: each removed node with where it stood), and what the user decided in chat (`decisions`:
- * approval log entries, each with its `node`, whose number may change yet).
+ * was taken out (`taken`: each removed node with where it stood), what the user decided in chat (`decisions`:
+ * approval log entries, each with its `node`, whose number may change yet), and the nodes a ripple marked as needing
+ * review (`marked`, upstream first), and the lines to add to the project's topic notes (`topicNotes`).
  */
 export function applyOperations(model, ops, shown = {}) {
     if (!Array.isArray(ops) || !ops.length) throw new OpError('A change needs a list of operations.', 'Pass ops: [{ op: "add", … }, …].')
-    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [] }
+    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [], marked: [], topicNotes: [] }
+    /** A ripple from nodes that changed: what comes from them needs review. The result lists the marks, upstream first. */
+    const rippleFrom = nodes => {
+        for (const n of ripple(model, nodes)) if (!result.marked.includes(n)) result.marked.push(n)
+    }
     const touch = num => {
         result.touched = num
         result.touchedAll.push(num)
@@ -585,20 +1014,261 @@ export function applyOperations(model, ops, shown = {}) {
         return map
     }
 
+    /**
+     * Writes the outline's one topic the first time it needs it: for a second topic, or a second stage. The outline's
+     * nodes move under the Discussion of topic 1, which is named after the outline, and every number changes, once:
+     * from then on a topic's stages keep their numbers. Returns the topic.
+     */
+    const giveTopics = () => {
+        const deepest = Math.max(0, ...model.nodes.map(depthOf))
+        if (deepest + 2 > MAX_LEVEL)
+            throw new OpError(`Under a topic and its Discussion, the outline's deepest nodes would be ${deepest + 2} levels deep; nodes nest at most ${MAX_LEVEL}.`, 'A topic and its stage take two levels: fold the deepest nodes into bullets in their parents’ text first.')
+        const topic = blankNode(1)
+        topic.topic = true
+        topic.stages = ['discussion']
+        topic.title = (model.headers.title || '').trim() || 'Topic'
+        topic.id = newId(byId(model))
+        const discussion = stageHeading('discussion', '1', 2)
+        discussion.children = model.nodes
+        topic.children = [discussion]
+        model.nodes = [topic]
+        const map = new Map()
+        renumber(topic, '1', 1, map)
+        renumbered(map)
+        if (map.size)
+            result.notes.push(
+                'The outline is written as topics now: its nodes moved under 1.1, the Discussion of topic 1 (named after the outline), and each number changed once, as listed below. From here on a stage keeps its number: Discussion .1, Plan .2, Implementation .3, Verification .4, Preservation .5.',
+            )
+        return topic
+    }
+
+    /** The topic an operation names (`num`), or with no number the outline's one topic: undefined while that is not written. */
+    const topicFor = (num, what) => {
+        const topics = allTopics(model)
+        const listed = () => (topics.length ? `The topics are: ${topics.map(t => `${t.num} ${t.title}`).join('; ')}.` : 'This outline has one topic, not written yet: leave num out to mean it.')
+        if (num === undefined || num === '' || num === null) {
+            if (topics.length <= 1) return topics[0]
+            throw new OpError(`${what} needs the number of its topic.`, listed())
+        }
+        const { node } = get(num, 'topic')
+        if (!node.topic) throw new OpError(`${num} is not a topic.`, listed())
+        return node
+    }
+
+    /** The doing stages of a topic that are on, as a hint names them. */
+    const doingOf = topic => {
+        const on = topic.stages.filter(s => DOING.includes(s))
+        return on.length ? on.map(s => `${stageNumber(topic.num, s)} ${STAGE_NAME[s]}`).join(', ') : `${stageNumber(topic.num, 'implementation')} Implementation, once you turn it on ({ op: "stages", num: "${topic.num}", on: ["implementation"] })`
+    }
+
+    /**
+     * Refuses nodes placed where they may not sit: a task outside Implementation, Verification and Preservation, a
+     * plan item outside Plan, anything in a stage that is off. `place` is where they go (placeOf). An outline without
+     * topics keeps the rules of before: its one Discussion holds tasks too, and it has no Plan.
+     */
+    const checkPlaced = (nodes, place) => {
+        const placed = nodes.flatMap(n => allNodes([n]))
+        if (!place.topic) {
+            const item = placed.find(n => n.planItem)
+            if (item) throw new OpError(`${item.num} is a plan item, and this outline has no Plan.`, 'Turn Plan on first ({ op: "stages", on: ["plan"] }), then add the plan items under it.')
+            return
+        }
+        const { topic, name } = place
+        if (!name) throw new OpError(`Under the topic ${topic.num} stand its stages, not nodes.`, `Place it under one of its stages: ${topic.children.filter(c => c.stage).map(c => `${c.num} ${c.title}`).join(', ')}.`)
+        if (!topic.stages.includes(name))
+            throw new OpError(`${STAGE_NAME[name]} of ${topic.num} is off: the user turned it off, and it asks nothing.`, `Place it in a stage that is on. If the user wants ${STAGE_NAME[name]} back, turn it on: { op: "stages", num: "${topic.num}", on: ["${name}"] }.`)
+        for (const n of placed) {
+            if (n.task && !DOING.includes(name))
+                throw new OpError(`${n.num} is a task, and ${STAGE_NAME[name]} holds no tasks.`, `Tasks sit in Implementation, Verification (where a task is a check) and Preservation: place it under ${doingOf(topic)}, linked to what it carries out.`)
+            if (n.planItem && name !== 'plan')
+                throw new OpError(`${n.num} is a plan item, and only a Plan stage holds plan items.`, `Place it under ${stageNumber(topic.num, 'plan')} Plan${topic.stages.includes('plan') ? '' : `, once you turn Plan on ({ op: "stages", num: "${topic.num}", on: ["plan"] })`}.`)
+        }
+    }
+
+    /** A node added to a Discussion or Plan the agent had closed opens it again. */
+    const reopenFor = place => {
+        if (!place.stage?.stageDone) return
+        place.stage.stageDone = false
+        result.notes.push(`${place.stage.num} ${place.stage.title} is open again: a node was added to it.`)
+    }
+
+    /** Links point upstream only: from a node to one of its own stage or an earlier one. */
+    const checkUpstream = () => {
+        if (!hasTopics(model)) return
+        const places = stagesByNum(model)
+        const ids = byId(model)
+        for (const n of allNodes(model.nodes))
+            for (const id of n.links) {
+                const target = ids.get(id)
+                if (!target || stageIndex(places.get(target.num)) <= stageIndex(places.get(n.num))) continue
+                throw new OpError(
+                    `${n.num} (${STAGE_NAME[places.get(n.num)]}) would link to ${target.num} (${STAGE_NAME[places.get(target.num)]}), a later stage.`,
+                    'A link points upstream only, to what a node comes from: a node of its own stage or of an earlier one. Link the later node to the earlier one instead.',
+                )
+            }
+    }
+
+    /** A new topic, from an add with stages: its heading and a heading for each of its stages. */
+    const addTopic = op => {
+        if (!isText(op.num) || !NUM_RE.test(op.num)) throw new OpError(`An add needs the number of the new topic, and got ${JSON.stringify(op.num)}.`, 'Propose its full path: the next free number at the top level, or inside the stage that holds it.')
+        const where = `topic ${op.num}`
+        const stages = checkStages(op.stages, where)
+        const field = ['options', 'children', 'task', 'action', 'outcome', 'failed', 'status', 'ask', 'recommended', 'recommendation', 'plan', 'links'].find(f => op[f] !== undefined)
+        if (field)
+            throw new OpError(
+                `${where} is added with ${field}, and a topic holds its nodes in its stages.`,
+                'Add the topic with its title, text and stages, then its nodes under its stages (its number .1 for Discussion, .2 for Plan, and so on), in this same change.',
+            )
+        // The outline's nodes become topic 1 first, beside the new one.
+        const gave = !hasTopics(model) && model.nodes.length > 0 && !!giveTopics()
+        const parentNum = op.num.split('.').slice(0, -1).join('.')
+        const parent = parentNum ? get(parentNum, 'parent').node : undefined
+        if (parent && !parent.stage)
+            throw new OpError(
+                `A topic sits at the top level of the outline or inside a stage, and ${parentNum} is ${parent.topic ? 'a topic' : 'a node'}.`,
+                parent.topic ? `Place it inside one of the stages of ${parentNum}, such as ${parent.children.find(c => c.stage)?.num}, or at the top level.` : 'Place it inside the stage that holds that node, or at the top level.',
+            )
+        const early = parent && stages.find(name => stageIndex(name) < stageIndex(parent.stage))
+        if (early)
+            throw new OpError(
+                `${where} would start at ${STAGE_NAME[early]} inside ${parentNum} ${STAGE_NAME[parent.stage]}, and stages never go backwards.`,
+                `A topic placed inside a stage starts at that stage or a later one: give it ${STAGE_NAME[parent.stage]} or later stages only, or place it at the top level.`,
+            )
+        const siblings = parent ? parent.children : model.nodes
+        const next = nextNumber(parentNum, siblings)
+        if (op.num !== next)
+            throw new OpError(
+                `${where} would be numbered ${op.num}, and the next free number ${parentNum ? `under ${parentNum}` : 'at the top level'} is ${next}.`,
+                gave ? `The outline's nodes became topic 1 (under 1.1, its Discussion) to stand beside it, so add it as ${next}.` : `Add it as ${next}.`,
+            )
+        const level = (parent?.level ?? 0) + 1
+        if (level + 2 > MAX_LEVEL) throw new OpError(`${where} would be ${level} levels deep, which leaves no level for the nodes of its stages; nodes nest at most ${MAX_LEVEL}.`, 'Place it higher up, or at the top level.')
+        const topic = blankNode(level)
+        topic.num = op.num
+        topic.topic = true
+        topic.title = checkTitle(op.title, where)
+        topic.text = checkText(op.text, where) ?? ''
+        topic.summary = checkLine(op.summary, where, 'summary') ?? ''
+        topic.stages = stages
+        topic.id = newId(byId(model))
+        fitStages(topic)
+        siblings.push(topic)
+        if (parent) reopenFor(placeOf(model, topic.num))
+        for (const n of allNodes([topic])) shown[n.num] = nodeHash(n)
+        touch(op.num)
+    }
+
+    /** The user turned a stage of a topic off, as they said in chat: it keeps its nodes, folded away, and asks nothing. */
+    const stageOff = op => {
+        if (!STAGES.includes(op.stage)) throw new OpError('A stage-off needs the stage the user turned off.', `Pass stage: one of ${STAGES.join(', ')}.`)
+        const topic = topicFor(op.num, 'A stage-off')
+        if (!topic) throw new OpError('This outline is one topic with Discussion alone, and a topic always has a stage on.', 'Tell the user so; to work in another stage, turn that one on first.')
+        const name = STAGE_NAME[op.stage]
+        if (!topic.stages.includes(op.stage)) throw new OpError(`${name} of ${topic.num} is off already.`)
+        if (topic.stages.length === 1) throw new OpError(`${name} is the only stage on for ${topic.num}, and a topic always has a stage on.`, 'Ask the user which stage to turn on instead, and turn that one on first.')
+        topic.stages = topic.stages.filter(s => s !== op.stage)
+        fitStages(topic)
+        result.decisions.push({ ...userEntry(model, topic.num, 'turned-off'), stage: op.stage, node: topic })
+        touch(topic.num)
+    }
+
+    /** Takes nodes out of where they stand and closes the gaps they leave; returns them, in outline order. */
+    const lift = nodes => {
+        const order = new Map(allNodes(model.nodes).map((n, i) => [n, i]))
+        const lifted = [...nodes].sort((a, b) => order.get(a) - order.get(b))
+        const parents = new Set()
+        for (const n of lifted) {
+            const parent = indexOf(model).get(n.num).parent
+            const from = parent ? parent.children : model.nodes
+            from.splice(from.indexOf(n), 1)
+            parents.add(parent)
+        }
+        for (const parent of parents) renumbered(closeGap(parent ? parent.children : model.nodes, parent))
+        return lifted
+    }
+
+    /** Puts nodes under a stage of a topic, after what it holds, each numbered and leveled there. */
+    const place = (nodes, topic, name) => {
+        if (!nodes.length) return
+        let stage = topic.children.find(c => c.stage === name)
+        if (!stage) {
+            stage = stageHeading(name, topic.num, topic.level + 1)
+            topic.children.push(stage)
+            topic.children.sort((a, b) => stageIndex(a.stage) - stageIndex(b.stage))
+        }
+        const map = new Map()
+        for (const n of nodes) {
+            if (stage.level + depthOf(n) > MAX_LEVEL) throw new OpError(`Under ${stage.num}, ${n.num} and its nodes would be deeper than ${MAX_LEVEL} levels.`, 'Fold its deepest nodes into bullets first.')
+            renumber(n, nextNumber(stage.num, stage.children), stage.level + 1, map)
+            stage.children.push(n)
+        }
+        renumbered(map)
+    }
+
+    /**
+     * Two topics made one, as the user said (`num` into `into`): the nodes of each stage of the one go after those of
+     * the same stage of the other, which gets every stage either had on; the topics that waited for the one wait for
+     * the other. Ids, and so links, are kept; numbers change, and the one's own number goes to the other.
+     */
+    const merge = op => {
+        const from = topicFor(op.num, 'A merge')
+        const into = topicFor(op.into, 'A merge')
+        if (!from || !into) throw new OpError('A merge needs two topics: num, and into.', 'Pass num, the topic the user merged, and into, the topic it went into.')
+        if (from === into) throw new OpError(`${from.num} cannot be merged into itself.`)
+        if (into.num.startsWith(`${from.num}.`)) throw new OpError(`${into.num} sits inside ${from.num}, so ${from.num} cannot go into it.`, `Merge ${into.num} into ${from.num} instead.`)
+        const holder = placeOf(model, into.num).stage
+        const early = holder && from.stages.find(name => stageIndex(name) < stageIndex(holder.stage))
+        if (early) throw new OpError(`${into.num} sits inside ${holder.num} ${STAGE_NAME[holder.stage]}, so it cannot take ${STAGE_NAME[early]} from ${from.num}.`, 'Merge the other way round.')
+        const title = from.title
+        const fromNum = from.num
+        into.stages = [...new Set([...into.stages, ...from.stages])].sort((a, b) => stageIndex(a) - stageIndex(b))
+        fitStages(into)
+        // The topics that waited for the one wait for the other, which waits for what either waited for.
+        const fromId = idOf(model, from)
+        const intoId = idOf(model, into)
+        for (const t of allTopics(model)) if (t.depends.includes(fromId)) t.depends = [...new Set(t.depends.map(id => (id === fromId ? intoId : id)))].filter(id => id !== t.id)
+        into.depends = [...new Set([...into.depends, ...from.depends])].filter(id => id !== intoId && id !== fromId)
+        for (const stage of from.children.filter(c => c.stage)) {
+            const moving = stage.children
+            stage.children = []
+            place(moving, into, stage.stage)
+        }
+        // The one's heading goes, with its empty stages; its number, in the action log and wherever the page keeps
+        // numbers, now means the other.
+        const parent = indexOf(model).get(from.num).parent
+        const siblings = parent ? parent.children : model.nodes
+        siblings.splice(siblings.indexOf(from), 1)
+        for (const n of allNodes([from])) delete shown[n.num]
+        renumbered(closeGap(siblings, parent))
+        result.renumbered.set(fromNum, into.num)
+        result.decisions.push({ ...userEntry(model, into.num, 'merged'), from: title, node: into })
+        result.notes.push(`${fromNum} ${title} is merged into ${into.num} ${into.title}, as the user said: its nodes are under the stages of ${into.num} now, with their links.`)
+        touch(into.num)
+    }
+
     const apply = {
         add(op) {
+            if (op.stages !== undefined) return addTopic(op)
             if (!isText(op.num) || !NUM_RE.test(op.num)) throw new OpError(`An add needs the number of the new node, and got ${JSON.stringify(op.num)}.`, 'Propose the full path, such as 2.4: the next free number under its parent.')
             const index = indexOf(model)
             if (index.has(op.num)) throw new OpError(`The number ${op.num} is taken by "${index.get(op.num).node.title}".`, `Update that node, or add the new one as ${nextNumber(op.num.split('.').slice(0, -1).join('.'), index.get(op.num).parent?.children ?? model.nodes)}.`)
             const parentNum = op.num.split('.').slice(0, -1).join('.')
             const parent = parentNum ? get(parentNum, 'parent').node : undefined
+            if (!parent && hasTopics(model))
+                throw new OpError(`${op.num} would be a node at the top level, and the top level of this outline holds topics.`, `Add it under a stage of a topic, such as ${model.nodes[0].children[0]?.num}, or give it stages to make it a topic.`)
+            if (parent?.topic) checkPlaced([], { topic: parent, name: '' })
             const siblings = parent ? parent.children : model.nodes
             const next = nextNumber(parentNum, siblings)
             if (op.num !== next) throw new OpError(`${op.num} would skip numbers under ${parentNum || 'the outline'}.`, `The next free number there is ${next}.`)
             const option = parent && isQuestion(parent)
             if (parent && parent.question && !parent.children.length) throw new OpError(`${parentNum} is a question without options.`, 'Add its options as nodes under it.')
-            const node = buildNode(op, op.num, (parent?.level ?? 0) + 1, option ? LETTERS[siblings.length] ?? 'Z' : '')
+            const later = []
+            const node = buildNode(op, op.num, (parent?.level ?? 0) + 1, option ? LETTERS[siblings.length] ?? 'Z' : '', later)
+            const place = placeOf(model, op.num)
+            checkPlaced([node], place)
             siblings.push(node)
+            reopenFor(place)
+            for (const { node: n, links, where } of later) setLinks(model, n, links, where)
             if (option) result.notes.push(`${op.num} is option (${node.option}) of the question ${parentNum}.`)
             for (const n of allNodes([node])) shown[n.num] = nodeHash(n)
             touch(op.num)
@@ -606,12 +1276,15 @@ export function applyOperations(model, ops, shown = {}) {
 
         update(op) {
             const { node, parent } = get(op.num)
+            if (node.stage) throw new OpError(`${op.num} is a stage: its heading is its name, and it holds no text of its own.`, 'Write what belongs to the stage in a node under it.')
+            const field = node.topic && ['task', 'action', 'status', 'ask', 'recommended', 'recommendation', 'plan', 'links'].find(f => op[f] !== undefined)
+            if (field) throw new OpError(`${op.num} is a topic, and a topic has no ${field}.`, 'A topic has a title, text and a summary: what has a kind goes in a node under one of its stages.')
             if (shown[op.num] !== nodeHash(node)) {
                 shown[op.num] = nodeHash(node)
                 const stale = new OpError(
                     `${op.num} changed since you last saw it (or you have not read it since your context was compacted), so the update was not applied.`,
                     'This is the node as it is now. Send the update again if it still holds, keeping what the node has and your change needs.',
-                    nodeText(node, parent),
+                    nodeText(model, node, parent),
                 )
                 stale.num = op.num
                 throw stale
@@ -628,11 +1301,22 @@ export function applyOperations(model, ops, shown = {}) {
                 const line = asked === false ? '' : checkTask(asked, where)
                 if (line && !node.task && !node.children.length && node.claim)
                     throw new OpError(`${op.num} is a claim, so it cannot become a task too.`, `${ONE_KIND}: add the task as a node of its own beside ${op.num}.`)
+                if (line && !node.task) {
+                    if (node.planItem) throw new OpError(`${op.num} is a plan item, so it cannot become a task too.`, 'The task that carries a plan item out is a node of its own in Implementation, linked to it.')
+                    checkPlaced([{ ...node, task: 'proposed', children: [] }], placeOf(model, op.num))
+                }
                 node.taskLine = line ?? ''
                 if (!line) node.task = ''
                 else node.task ||= 'proposed'
             }
+            if (op.plan !== undefined) {
+                if (typeof op.plan !== 'boolean') throw new OpError(`The plan of ${where} is ${JSON.stringify(op.plan)}.`, 'plan is true or false.')
+                if (op.plan && node.task) throw new OpError(`${op.num} is a task, so it cannot be a plan item too.`, 'A plan item says what will be done; the task that does it is a node of its own in Implementation, linked to it.')
+                if (op.plan && !node.planItem) checkPlaced([{ ...node, planItem: true, children: [] }], placeOf(model, op.num))
+                node.planItem = op.plan
+            }
             if (op.ask !== undefined) node.asks = checkAsk(op.ask, node, parent && isQuestion(parent), where)
+            if (op.links !== undefined) setLinks(model, node, op.links, where)
             if (op.recommended !== undefined) {
                 if (!parent || !isQuestion(parent)) throw new OpError(`${op.num} is not an option, so it cannot be recommended.`, 'Use the recommendation field for a node that is not a choice.')
                 if (op.recommended) parent.children.forEach(c => (c.recommended = false))
@@ -657,6 +1341,9 @@ export function applyOperations(model, ops, shown = {}) {
                 result.notes.push(`${op.num} was user-approved; its wording changed, so ${node.task ? 'the approval no longer stands' : 'it is a claim again'} until the user approves the new wording.`)
             }
             shown[op.num] = nodeHash(node)
+            // Changing a node is looking at it again: its mark goes. New wording reaches what comes from it.
+            node.review = false
+            if (nodeHash(node) !== before) rippleFrom([node])
             touch(op.num)
         },
 
@@ -666,6 +1353,19 @@ export function applyOperations(model, ops, shown = {}) {
             const target = under ? get(under, 'parent').node : undefined
             if (under && (under === op.num || under.startsWith(`${op.num}.`))) throw new OpError(`${op.num} cannot move under itself.`)
             if (target === parent) throw new OpError(`${op.num} is already under ${under || 'the outline'}.`)
+            if (node.stage) throw new OpError(`${op.num} is a stage, and a stage stays in its topic, at its place in the lifecycle.`, 'Move the nodes under it instead.')
+            if (hasTopics(model)) {
+                if (node.topic) {
+                    if (target && !target.stage) throw new OpError(`A topic sits at the top level of the outline or inside a stage, and ${under} is ${target.topic ? 'a topic' : 'a node'}.`, 'Move it under a stage, or to the top level ("").')
+                    const early = target && node.stages.find(name => stageIndex(name) < stageIndex(target.stage))
+                    if (early) throw new OpError(`Inside ${under} ${STAGE_NAME[target.stage]}, ${op.num} would start at ${STAGE_NAME[early]}, and stages never go backwards.`, `A topic placed inside a stage starts at that stage or a later one: move it under an earlier stage, or to the top level.`)
+                } else {
+                    if (!target) throw new OpError(`The top level of this outline holds topics, and ${op.num} is not one.`, 'Move it under a stage of a topic.')
+                    const to = placeOf(model, `${under}.1`)
+                    // Nodes that stay in a stage of the same name are left as they were; a new stage takes only what may sit there.
+                    if (to.name !== placeOf(model, op.num).name || !to.topic?.stages.includes(to.name)) checkPlaced([node], to)
+                }
+            }
             const level = (target?.level ?? 0) + 1
             if (level + depthOf(node) - 1 > MAX_LEVEL) throw new OpError(`Under ${under}, ${op.num} and its nodes would be deeper than ${MAX_LEVEL} levels.`, 'Move it higher up, or fold its deepest nodes into bullets first.')
             const from = parent ? parent.children : model.nodes
@@ -680,11 +1380,13 @@ export function applyOperations(model, ops, shown = {}) {
             renumber(node, nextNumber(target?.num ?? '', to), level, map)
             to.push(node)
             renumbered(map)
+            if (target) reopenFor(placeOf(model, node.num))
             touch(node.num)
         },
 
         remove(op) {
             const { node, parent } = get(op.num)
+            if (node.stage) throw new OpError(`${op.num} is a stage, and a stage is never taken out: only the user turns one off.`, 'Remove the nodes under it, or, when the user said in chat to turn it off, record that: { op: "record", decision: "stage-off", … }.')
             const from = parent ? parent.children : model.nodes
             const gone = allNodes([node]).map(n => n.num)
             // What was taken out and where it stood: the page keeps its row there until the user has seen it go. A node
@@ -696,17 +1398,37 @@ export function applyOperations(model, ops, shown = {}) {
             for (const num of gone) delete shown[num]
             model.queue = model.queue.filter(item => !gone.includes(item.num))
             result.ordered = result.ordered.filter(num => !gone.includes(num))
+            const goneIds = new Map(allNodes([node]).filter(n => n.id).map(n => [n.id, n.num]))
             renumbered(closeGap(from, parent))
+            // A link to a node that is gone goes with it, and so does a dependency on a topic that is gone.
+            for (const n of allNodes(model.nodes)) {
+                if (n.depends.some(id => goneIds.has(id))) {
+                    result.notes.push(`${n.num} no longer waits for ${n.depends.filter(id => goneIds.has(id)).map(id => goneIds.get(id)).join(', ')}, which ${n.depends.filter(id => goneIds.has(id)).length === 1 ? 'was' : 'were'} taken out.`)
+                    n.depends = n.depends.filter(id => !goneIds.has(id))
+                }
+                const dropped = n.links.filter(id => goneIds.has(id))
+                if (!dropped.length) continue
+                n.links = n.links.filter(id => !goneIds.has(id))
+                // What it came from is gone: it needs review, and so does what comes from it.
+                if (!n.review) result.marked.push(n)
+                n.review = true
+                rippleFrom([n])
+                result.notes.push(`${n.num} no longer links to ${dropped.map(id => goneIds.get(id)).join(', ')}, which ${dropped.length === 1 ? 'was' : 'were'} taken out.`)
+            }
             result.touchedAll = result.touchedAll.filter(n => !gone.includes(n))
             if (parent) touch(parent.num)
             else result.touched = ''
         },
 
         record(op) {
+            if (op.decision === 'stage-off') return stageOff(op)
+            if (op.decision === 'merge') return merge(op)
             const { node, parent } = get(op.num)
             const option = parent && isQuestion(parent)
             if (op.decision === 'pick') {
                 if (!option) throw new OpError(`${op.num} is not an option of a question.`, 'To record an approval of a node, use decision "approve".')
+                // The option picked before is no longer the decision: what comes from it needs review.
+                rippleFrom(parent.children.filter(c => c.approved && c !== node))
                 parent.children.forEach(c => (c.approved = false))
                 node.approved = true
                 result.decisions.push({ ...userEntry(model, node.num, 'picked'), node })
@@ -725,7 +1447,9 @@ export function applyOperations(model, ops, shown = {}) {
                     if (n.approved && (!n.children.length || n.option)) result.decisions.push({ ...userEntry(model, n.num, 'took-back'), node: n })
                     n.approved = false
                 }
-            } else throw new OpError(`A record's decision is "approve", "reopen" or "pick", not ${JSON.stringify(op.decision)}.`)
+                // A decision reopened: what was built on it needs review.
+                rippleFrom(allNodes([node]))
+            } else throw new OpError(`A record's decision is "approve", "reopen", "pick", "stage-off" or "merge", not ${JSON.stringify(op.decision)}.`)
             touch(op.num)
         },
 
@@ -744,17 +1468,146 @@ export function applyOperations(model, ops, shown = {}) {
                 )
             if (!node.task && !node.children.length && node.claim)
                 throw new OpError(`${op.num} is a claim, so it is not finished as a task.`, `${ONE_KIND}: add what you did as a node of its own beside ${op.num}, with its outcome.`)
+            if (isStructure(node)) throw new OpError(`${op.num} is ${node.topic ? 'a topic' : 'a stage'}, not a task.`, node.stage && !DOING.includes(node.stage) ? `To close a Discussion or a Plan, send { op: "done", num: "${op.num}" }.` : 'Finish the tasks in it: a doing stage is done once every task in it is.')
+            if (node.planItem) throw new OpError(`${op.num} is a plan item, not a task.`, 'Finish the tasks in Implementation that carry it out.')
+            if (!node.task) checkPlaced([{ ...node, task: 'done', children: [] }], placeOf(model, op.num))
             node.task = op.failed ? 'failed' : 'done'
             node.text = [node.text, outcome].filter(Boolean).join('\n\n')
             // A task takes no approval: one that an older outline left on it goes. An option's tick is the user's pick, which stands.
             if (takesNoApproval(node, parent)) node.approved = false
+            node.review = false
+            // A task that failed reaches what comes from it; a check that failed also undermines what it checks.
+            if (op.failed) {
+                const checked = placeOf(model, op.num).name === 'verification' ? linkedFrom(model, node) : []
+                for (const n of checked) {
+                    if (!n.review) result.marked.push(n)
+                    n.review = true
+                }
+                rippleFrom([node, ...checked])
+            }
             shown[op.num] = nodeHash(node)
+            touch(op.num)
+        },
+
+        // Turns stages of a topic on; only the user turns one off. The outline's one topic is written the first time it
+        // gets a second stage.
+        stages(op) {
+            if (op.off !== undefined) throw new OpError('Only the user turns a stage off.', 'When the user says in chat to turn one off, record it: { op: "record", num, decision: "stage-off", stage }.')
+            const on = checkStages(op.on, 'stages', false)
+            let topic = topicFor(op.num, 'A stages operation')
+            if (!topic) {
+                if (on.every(name => name === 'discussion')) return result.notes.push('Discussion is on already: it is the stage of the outline’s one topic.')
+                topic = giveTopics()
+            }
+            const holder = placeOf(model, topic.num).stage
+            const early = holder && on.find(name => stageIndex(name) < stageIndex(holder.stage))
+            if (early) throw new OpError(`${topic.num} sits inside ${holder.num} ${STAGE_NAME[holder.stage]}, so it cannot turn ${STAGE_NAME[early]} on: stages never go backwards.`, `A topic placed inside a stage has that stage or later ones only.`)
+            for (const name of on) {
+                if (topic.stages.includes(name)) result.notes.push(`${STAGE_NAME[name]} of ${topic.num} is on already.`)
+                else topic.stages.push(name)
+            }
+            topic.stages.sort((a, b) => stageIndex(a) - stageIndex(b))
+            fitStages(topic)
+            for (const n of topic.children) shown[n.num] ??= nodeHash(n)
+            touch(topic.num)
+        },
+
+        // Moves part of a topic into a sibling topic of its own, once it can be done and verified alone: the nodes listed,
+        // each with what is under it, its id and its links. Decisions stay where they were made: the new topic has
+        // Discussion off, and its plan items keep their links to them.
+        split(op) {
+            let topic = topicFor(op.num, 'A split')
+            if (!topic) topic = giveTopics()
+            if (!Array.isArray(op.nodes) || !op.nodes.length) throw new OpError('A split needs the nodes that move.', 'Pass nodes: ["1.2.3", …]: the plan items, tasks and checks of the part that can be done and verified alone.')
+            const title = checkTitle(op.title, 'the new topic')
+            const listed = op.nodes.map(num => {
+                // Numbers given before this change wrote the outline's topics have moved under 1.1.
+                const { node } = get(isText(num) ? (result.renumbered.get(num) ?? num) : num)
+                const place = placeOf(model, node.num)
+                if (isStructure(node)) throw new OpError(`${node.num} is ${node.topic ? 'a topic' : 'a stage'}.`, 'List the nodes that move: plan items, tasks and checks.')
+                if (place.topic !== topic) throw new OpError(`${node.num} is not in topic ${topic.num}.`, `List nodes of ${topic.num} only.`)
+                if (place.name === 'discussion')
+                    throw new OpError(`${node.num} is in Discussion, and the decisions stay in the topic they were made in.`, 'The new topic has Discussion off: move the plan items and the tasks, which keep their links to the decisions here.')
+                if (isQuestion(indexOf(model).get(node.num).parent ?? blankNode(0))) throw new OpError(`${node.num} is an option: it moves with its question.`)
+                return { node, name: place.name }
+            })
+            const moving = listed.filter(({ node }) => !listed.some(o => o.node !== node && node.num.startsWith(`${o.node.num}.`)))
+            const holderNode = indexOf(model).get(topic.num).parent
+            const siblings = holderNode ? holderNode.children : model.nodes
+            const fresh = blankNode(topic.level)
+            fresh.topic = true
+            fresh.title = title
+            fresh.text = checkText(op.text, 'the new topic') ?? ''
+            fresh.stages = topic.stages.filter(name => name !== 'discussion')
+            for (const { name } of moving) if (!fresh.stages.includes(name)) fresh.stages.push(name)
+            fresh.stages.sort((a, b) => stageIndex(a) - stageIndex(b))
+            fresh.id = newId(byId(model))
+            const nodes = lift(moving.map(m => m.node))
+            fresh.num = nextNumber(holderNode?.num ?? '', siblings)
+            siblings.push(fresh)
+            fitStages(fresh)
+            for (const name of STAGES) place(nodes.filter(n => moving.find(m => m.node === n).name === name), fresh, name)
+            for (const n of allNodes([fresh])) shown[n.num] ??= nodeHash(n)
+            result.notes.push(`${moving.length} node${moving.length === 1 ? '' : 's'} of ${topic.num} moved into the new topic ${fresh.num} ${fresh.title}, with Discussion off; their links stay.`)
+            touch(fresh.num)
+        },
+
+        // The agent looked at a node a ripple reached and says it still holds: its mark goes. Changing the node clears it too.
+        holds(op) {
+            const { node } = get(op.num)
+            if (!node.review) throw new OpError(`${op.num} does not need review.`, 'holds clears the mark of a node a change upstream reached; this one has none.')
+            node.review = false
+            touch(op.num)
+        },
+
+        // Sets the topics a topic waits for, replacing those it had: it cannot go on until they are done. A link into
+        // another topic makes one by itself. Dependencies never form a loop.
+        depends(op) {
+            const topic = topicFor(op.num, 'A depends operation')
+            if (!topic) throw new OpError('This outline has one topic, which waits for nothing.', 'Add the topic it would wait for first.')
+            if (!Array.isArray(op.on)) throw new OpError(`The dependencies of ${topic.num} are not a list.`, 'Pass on: ["2", …]: the numbers of the topics it waits for ([] for none).')
+            const ids = []
+            for (const num of op.on) {
+                const { node } = get(num, 'topic')
+                if (!node.topic) throw new OpError(`${num} is not a topic.`, `A topic waits for topics: ${allTopics(model).filter(t => t !== topic).map(t => `${t.num} ${t.title}`).join('; ') || 'there is no other'}.`)
+                if (node === topic) throw new OpError(`${topic.num} cannot wait for itself.`)
+                if (!ids.includes(idOf(model, node))) ids.push(node.id)
+            }
+            topic.depends = ids
+            touch(topic.num)
+        },
+
+        // Closes a Discussion or a Plan: the agent's word that its deciding or planning is done. A doing stage is done
+        // once its tasks are. A node added to it opens it again.
+        done(op) {
+            const { node, parent } = get(op.num, 'stage')
+            if (!node.stage) throw new OpError(`${op.num} is not a stage.`, 'done closes a Discussion or a Plan stage: pass the stage’s number, such as 1.1. A task is finished with finish.')
+            const name = STAGE_NAME[node.stage]
+            if (DOING.includes(node.stage)) throw new OpError(`${op.num} is ${name}, which is done once every task in it is.`, 'Finish its tasks: the stage is then done by itself.')
+            if (!parent.stages.includes(node.stage)) throw new OpError(`${op.num} ${name} is off.`, 'A stage that is off asks nothing and is not closed.')
+            if (!node.children.length) throw new OpError(`${op.num} ${name} holds nothing yet.`, 'A stage that has not started is not done: add its nodes first.')
+            const open = node.stage === 'discussion' ? inStage(node).filter(n => isQuestion(n) && questionStatus(n) === 'open') : []
+            if (open.length)
+                throw new OpError(
+                    `${op.num} Discussion has ${open.length === 1 ? 'an unresolved question' : 'unresolved questions'}: ${open.map(label).join('; ')}.`,
+                    'A Discussion is done once nothing in it waits to be decided: the user picks an option, or you recommend one.',
+                )
+            node.stageDone = true
             touch(op.num)
         },
 
         // The agent took in the user's ticks and nothing in the outline follows from them: any change says so (agent.js),
         // and this operation makes a change that holds nothing else.
         acknowledge() {},
+
+        // A line for the project's topic notes: what the user's merge, or their rejection of a split, says about how
+        // they want work divided into topics. The server appends it (agent.js).
+        note(op) {
+            if (!isText(op.text) || !op.text.trim()) throw new OpError('A note needs its text.', 'One sentence on how the user wants work divided into topics.')
+            if (/\n/.test(op.text.trim())) throw new OpError('A topic note is one line.', 'Say it in one sentence.')
+            if (op.text.length > 500) throw new OpError('A topic note is one sentence; this one is longer than 500 characters.')
+            result.topicNotes.push(op.text.trim())
+        },
 
         message(op) {
             if (!isText(op.text) || !op.text.trim()) throw new OpError('A message needs its text.')
@@ -786,11 +1639,21 @@ export function applyOperations(model, ops, shown = {}) {
         try {
             if (!run) throw new OpError(`${JSON.stringify(op?.op)} is not an operation.`, `The operations are ${Object.keys(apply).join(', ')}.`)
             run(op)
+            checkUpstream()
+            const loop = hasTopics(model) && dependencyLoop(dependenciesOf(model))
+            if (loop)
+                throw new OpError(
+                    `The topics would wait for each other in a loop: ${loop.join(' waits for ')}.`,
+                    'Dependencies never form a loop: a topic waits only for what has to be done before it. Drop the dependency (or the link into the other topic) that is wrong.',
+                )
         } catch (e) {
             if (e instanceof OpError) e.message = `Operation ${i + 1} of ${ops.length} (${op?.op ?? '?'}${op?.num ? ` ${op.num}` : ''}): ${e.message}`
             throw e
         }
     })
+    // The marks this change made that still stand: a node marked and then changed, or taken out, was dealt with.
+    const live = new Set(allNodes(model.nodes))
+    result.marked = result.marked.filter(n => n.review && live.has(n))
     return result
 }
 
@@ -819,6 +1682,34 @@ function leavesToApprove(node, out = []) {
 }
 
 /**
+ * The user turned a stage of a topic on or off on the page (`{ topic, name, on }`). A stage turned off keeps its
+ * nodes, folded away, and asks nothing; a topic always has a stage on. Returns the action log's entry, or undefined
+ * when the stage already was so.
+ */
+export function userStage(model, { topic: num, name, on } = {}) {
+    const found = indexOf(model).get(num)
+    if (!found?.node.topic) throw new OpError(`${num} is not a topic`)
+    if (!STAGES.includes(name) || typeof on !== 'boolean') throw new OpError('a stage is { topic, name, on }')
+    const topic = found.node
+    if (topic.stages.includes(name) === on) return undefined
+    if (!on && topic.stages.length === 1) throw new OpError(`${STAGE_NAME[name]} is the only stage on, and a topic always has one: turn another on first`)
+    const holder = placeOf(model, topic.num).stage
+    if (on && holder && stageIndex(name) < stageIndex(holder.stage)) throw new OpError(`${topic.num} sits inside ${STAGE_NAME[holder.stage]}, so it has no ${STAGE_NAME[name]}`)
+    topic.stages = on ? [...topic.stages, name].sort((a, b) => stageIndex(a) - stageIndex(b)) : topic.stages.filter(s => s !== name)
+    fitStages(topic)
+    return { ...userEntry(model, topic.num, on ? 'turned-on' : 'turned-off'), stage: name }
+}
+
+/** The user reopened a Discussion or a Plan the agent had closed. Returns the action log's entry. */
+export function userReopen(model, num) {
+    const found = indexOf(model).get(num)
+    if (!found?.node.stage) throw new OpError(`${num} is not a stage`)
+    if (!found.node.stageDone) throw new OpError(`${num} is not closed: Implementation, Verification and Preservation are done by their tasks`)
+    found.node.stageDone = false
+    return { ...userEntry(model, num, 'reopened'), stage: found.node.stage }
+}
+
+/**
  * Applies what the user did on the page: `set` is a list of `{ num, approved }`, one per node whose tick changed.
  * Returns the events the agent is told about: `{ kind: 'approved' | 'picked' | 'reopened', num, title }`.
  */
@@ -831,6 +1722,8 @@ export function applyUserSet(model, set) {
         if (!entry || typeof change.approved !== 'boolean') throw new OpError(`no node ${change?.num}`)
         const { node, parent } = entry
         const option = parent && isQuestion(parent)
+        // A topic's heading and a stage's take no approval.
+        if (isStructure(node)) continue
         // A task takes no approval: a tick sent for one is not recorded, and one an older outline left on it goes.
         if (takesNoApproval(node, parent)) {
             node.approved = false

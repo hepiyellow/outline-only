@@ -5,7 +5,7 @@ export type Status = 'open' | 'claim' | 'approved'
 
 /** The `@` tags a node's heading line can carry, right after its number. */
 /** The tags of a node, by the names the code uses: `@user-approved` is `approved`, `@agent-claim` is `claim`, `@action-done` is `action` and `ran`, `@action-failed` is `action` and `failed`. */
-export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed'
+export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed' | 'topic' | 'stage-done' | 'plan-item' | 'needs-review'
 
 /** A closing line of a node's text: `@Summary.`, `@Recommendation.` or `@Action.`, shown after its own tag. */
 export interface ClosingLine {
@@ -18,13 +18,21 @@ export interface ClosingLine {
 export interface OutlineNode {
     /** The full number path, as in the file: `2.1.3`. */
     num: string
-    /** 1 for a topic, down to 6. */
+    /** 1 for a top-level node, down to 10 (past 6 the heading has six `#` and its number says the level). */
     level: number
     tags: Tag[]
     /** The status in the file, from the node's own tags (a parent's rolled-up status is the page's to work out). */
     status: Status
     /** The letter of an option tagged `@option_A`; its title then starts with `(A)`. */
     option?: string
+    /** Server mode: the node's stable id (`@id:`), which links hold. A node has one once a link points at it. */
+    id?: string
+    /** Server mode: the ids of the nodes this one comes from (`@links:`). */
+    links?: string[]
+    /** Server mode: a stage's heading (`@stage:plan`) names its stage. */
+    stage?: StageName
+    /** Server mode: a topic's heading (`@topic`) lists the stages that are on (`@stages:`). */
+    stages?: StageName[]
     /** The title as plain text, for references. */
     title: string
     /** The title as inline HTML. */
@@ -38,12 +46,43 @@ export interface OutlineNode {
     children: OutlineNode[]
 }
 
+/** The stages of the lifecycle, in its order. */
+export type StageName = 'discussion' | 'plan' | 'implementation' | 'verification' | 'preservation'
+
+/** Where a stage of a topic stands (model.js `stageStatus`). */
+export type StageStatus = 'off' | 'not-started' | 'active' | 'done' | 'needs-review'
+
+/** What the lifecycle expects of a node and does not find (model.js `softFlags`): a badge, never refused. */
+export type SoftFlag = 'unplanned' | 'no-decision' | 'unapproved-claim' | 'no-plan-item' | 'unchecked'
+
+/** A stage heading, as the server reads it (model.js `lifecycleOf`). */
+export interface StageInfo {
+    /** The number of its topic. */
+    topic: string
+    name: StageName
+    on: boolean
+    status: StageStatus
+    /** Implementation, Verification, Preservation: how many of its tasks are done. */
+    progress?: { done: number; total: number }
+    /** The first stage of its topic that is on and not started: the page dims it as the next one. */
+    next?: boolean
+}
+
+/** Server mode: the outline's topics and stages, by number. Both are empty for an outline without topics. */
+export interface Lifecycle {
+    /** Each topic: its id, title, the stages on, and the numbers of the topics it waits for (its dependencies). */
+    topics: Record<string, { id: string; title: string; stages: StageName[]; waitsFor: string[] }>
+    stages: Record<string, StageInfo>
+    /** The nodes a ripple reached (`review`), and those with soft flags, by number. */
+    nodes: Record<string, { review?: boolean; flags?: SoftFlag[] }>
+}
+
 /** One change of a node, from GET /api/outline/<project>/<file>/history?num=: when, and the node's subtree then. */
 export interface HistoryEntry {
     at: number
     node: OutlineNode
     /** What the user did on the node then, from the approval log: the kind is the one the node had. */
-    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain' }[]
+    did?: { what: 'approved' | 'took-back' | 'picked' | 'ran' | 'turned-off' | 'turned-on' | 'reopened' | 'merged'; kind: 'claim' | 'task' | 'done' | 'failed' | 'option' | 'plain'; stage?: StageName; from?: string }[]
 }
 
 /**
@@ -115,6 +154,8 @@ export interface Outline {
     folder: string
     /** Whether the Terminal tab can attach: the outline names a tmux session and the server can run terminals. */
     terminalTab: boolean
+    /** Server mode: the outline's topics and stages. */
+    lifecycle: Lifecycle
     /** HTML of any text before the first topic. */
     intro: string
     /** The topics. */
@@ -159,7 +200,14 @@ export interface ViewerState {
     tab: TabName
     /** How the change indicators of the queue column are ordered: as the outline is, or the oldest change first. */
     order: 'number' | 'time'
+    /** Server mode: a topic's id → its topic layout, by stage (as kept) or by plan item. A topic not in it is by stage. */
+    layout?: Record<string, TopicLayout>
+    /** Server mode: the stage view, one stage of every topic, or of the one topic with the id `topic`; no stage, the outline as it is. */
+    stageView?: { stage: StageName | ''; topic: string }
 }
+
+/** How the page lays out one topic's nodes: by stage, as they are kept, or by plan item, drawn from the links. */
+export type TopicLayout = 'stage' | 'plan'
 
 /** The page's tabs: Outline, Markdown, Transcript and Terminal. */
 export type TabName = 'outline' | 'md' | 'transcript' | 'term'
@@ -210,7 +258,7 @@ export interface SlashCommand {
 
 /** A change to the viewer state: map sections change single entries (null deletes one), the others are replaced. */
 export type StatePatch = {
-    [K in keyof ViewerState]?: ViewerState[K] extends Record<string, infer V> ? Record<string, V | null> : ViewerState[K]
+    [K in keyof ViewerState]?: K extends 'stageView' ? ViewerState[K] : NonNullable<ViewerState[K]> extends Record<string, infer V> ? Record<string, V | null> : ViewerState[K]
 }
 
 /** An entry of the Transcript tab, from the outline's stream (transcript.js). */

@@ -4,6 +4,7 @@ import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -181,4 +182,47 @@ export async function until(check, { timeout = 5000, what = 'condition' } = {}) 
         if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
         await new Promise(r => setTimeout(r, 50))
     }
+}
+
+/** The session id the agent's plugin processes run under in the tests (the MCP process, the hooks). */
+export const AGENT_SESSION = '7a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+export const PLUGIN = path.join(ROOT, 'plugin')
+
+/** The plugin's MCP process, as an agent runs it: `request(method, params)` answers with the result of that call. */
+export function startMcp(server, env = {}) {
+    const child = spawn(process.execPath, [path.join(PLUGIN, 'scripts', 'outline-mcp.js')], {
+        cwd: server.home,
+        // The tests may themselves run in a session the page started, which has a project of its own.
+        env: { ...process.env, HOME: server.home, CLAUDE_CODE_SESSION_ID: AGENT_SESSION, CLAUDE_PROJECT_DIR: path.join(server.home, 'shop'), TMUX: '', OUTLINE_PROJECT: '', ...env },
+        stdio: ['pipe', 'pipe', 'inherit'],
+    })
+    const waiting = new Map()
+    readline.createInterface({ input: child.stdout }).on('line', line => {
+        const message = JSON.parse(line)
+        waiting.get(message.id)?.(message)
+        waiting.delete(message.id)
+    })
+    let id = 0
+    const request = (method, params) =>
+        new Promise(resolve => {
+            waiting.set(++id, resolve)
+            child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+        })
+    /** Calls a tool and returns its text; `error` says whether the tool refused. */
+    const tool = async (name, args = {}) => {
+        const { result } = await request('tools/call', { name, arguments: args })
+        return { text: result.content[0].text, error: !!result.isError }
+    }
+    return { request, tool, stop: () => child.stdin.end() }
+}
+
+/** Runs a hook of the plugin with the JSON the agent gives it, and returns what it prints. */
+export function runHook(server, event) {
+    return new Promise(resolve => {
+        const child = spawn(process.execPath, [path.join(PLUGIN, 'scripts', 'outline-hook.js')], { env: { ...process.env, HOME: server.home }, stdio: ['pipe', 'pipe', 'inherit'] })
+        let out = ''
+        child.stdout.on('data', d => (out += d))
+        child.on('exit', () => resolve(out))
+        child.stdin.end(JSON.stringify({ session_id: AGENT_SESSION, cwd: path.join(server.home, 'shop'), ...event }))
+    })
 }

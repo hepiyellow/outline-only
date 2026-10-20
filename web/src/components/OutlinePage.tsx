@@ -339,7 +339,7 @@ function Loaded({ outline, gone, viewer, stateLoaded, patch, session, transcript
                     // With a session linked the inbox sits under the input box's divider; otherwise it stays under the queue.
                     footer={linked ? undefined : <InboxButton messages={session.messages} seen={viewer.seen} onSeen={onSeen} onReveal={reveal} />}
                 />
-                <OutlineTab outline={outline} shown={shown} viewer={viewer} actions={actions} onToggle={onToggle} />
+                <OutlineTab outline={outline} shown={shown} viewer={viewer} actions={actions} onToggle={onToggle} onViewer={patch} />
             </TabsContent>
             <TabsContent value="md" forceMount hidden={tab !== 'md'} className="mx-auto max-w-[900px] px-5 pt-4 pb-20">
                 <div className="markdown" dangerouslySetInnerHTML={{ __html: outline.markdown }} />

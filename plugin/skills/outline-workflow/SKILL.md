@@ -13,6 +13,18 @@ This is how to work with a user through an outline when they have not said other
 - **An answer changes the node it is about.** When the user asks about, corrects or narrows existing nodes, `update` those nodes: fold the answer into each one's text and keep its number. If the answer is long or has parts, add child nodes under it. Do not add a sibling that restates or summarizes them. Add a node only for content that is new.
 - **Keep the outline a mirror.** When a node turns out to belong elsewhere, move it; when it is wrong or superseded, remove it. An outline that only grows stops being a mirror.
 
+## Topics and their stages
+
+- **Start a topic with the stages of a preset**, and turn on later what the work turns out to need:
+  - **coding**: every stage. Verification holds the checks (the tests, a look at the page), Preservation what keeps the work (a commit, the docs).
+  - **strategy**: Discussion, Plan and Preservation (the decision written down where the team reads it); no Implementation or Verification.
+  - **handed-over plan**: Plan, Implementation, Verification and Preservation. The deciding happened outside the outline, as when the user hands over a plan to carry out, so Discussion is off.
+  - **question**: Discussion alone, which is what an outline nobody chose stages for has. Leave such an outline without topics until the work needs a second stage.
+  The topic keeps the stages that are on, not the preset's name: say in its text which preset you started from.
+- **A part of the work is a topic of its own** when it can be decided, carried out and verified apart from the rest: another component, a second deliverable, a question whose answer the rest does not wait for. Anything else is a node in the topic it belongs to. A single question is never a topic: it is a node of a Discussion.
+- **Read the project's topic notes before you make topics or split one.** `start` gives them, with where the file is: they are how this user wants work divided, and they win over everything here. After the user merges topics you split, or rejects a split, add one line with a `note` operation: what it says about how they divide work ("keeps a migration and its rollout in one topic"), not what happened.
+- **Split a part off when it can be done and verified on its own**, without asking: typically when a Plan has grown a group of plan items that another topic could carry out and check apart (a component, a migration). Do not split what still waits on an open question of its topic. When the user merges a split back, take it as a rule for this kind of work.
+
 ## Tasks wait for the user
 
 - **Run only when asked.** Carry out a task when the user presses Run on the page (the news says so, or a line `Run in the outline: …` arrives) or asks in chat, and never before. A pick of an option that is a task does not run it.

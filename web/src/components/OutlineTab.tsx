@@ -1,11 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { UNTITLED, allNodes, currentPath, isStarting } from '@/lib/outline'
+import { api, outlineApiPath } from '@/lib/api'
+import { UNTITLED, allNodes, currentPath, isStarting, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
+import { topicTraceOf, traceOf } from '@/lib/trace'
 import { cn } from '@/lib/utils'
-import type { Outline, OutlineNode, ViewerState } from '@/types'
+import type { Lifecycle, Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
+import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
 import { agentOf } from './ModelPicker'
 import { NodeHistory } from './NodeHistory'
+import { Overview } from './Overview'
+import { useNotify } from './Notice'
 import { OutlineCtx, RemovedRow, Topic, isRemoved, withRemoved, type OutlineContext } from './NodeView'
 import { waiting } from './queue'
 import { RenameTitle } from './RenameTitle'
@@ -19,7 +24,13 @@ const SETTLE_PAUSE = 700
 /** How long the kind marks that changed as a change was opened are drawn pulsing, a little over one grow and shrink. */
 const PULSE_MS = 700
 
-export const isOpenIn = (open: OpenNodes, statuses: Statuses) => (node: OutlineNode) => (node.num in open ? open[node.num] : statuses.startsOpen(node))
+export const isOpenIn =
+    (open: OpenNodes, statuses: Statuses, stages: Record<string, StageInfo> = {}) =>
+    (node: OutlineNode) =>
+        node.num in open ? open[node.num] : (lifecycleStartsOpen(node, stages) ?? statuses.startsOpen(node))
+
+/** The lifecycle of an outline without topics: no topics, no stages, no marks. */
+const NO_LIFECYCLE: Lifecycle = { topics: {}, stages: {}, nodes: {} }
 
 /** Whether a node has nothing left to show: a parent that is settled, or a task the agent carried out and did not fail. */
 const finished = (node: OutlineNode, statuses: Statuses) => (node.children.length ? statuses.isSettled(node) : statuses.ran(node) && !node.tags.includes('failed'))
@@ -66,6 +77,8 @@ interface Props {
     viewer: ViewerState
     actions: NodeActions
     onToggle: (node: OutlineNode, open: boolean) => void
+    /** Changes the viewer state: the topic layouts and the stage view. */
+    onViewer?: (patch: StatePatch) => void
 }
 
 /** What an outline without nodes says. One that is starting (`isStarting`) says so under it. */
@@ -74,19 +87,38 @@ const EMPTY = {
     unlinked: 'This outline is empty.',
 }
 
-export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props) {
+export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer = () => {} }: Props) {
     const root = useRef<HTMLDivElement>(null)
     const [historyOf, setHistoryOf] = useState<OutlineNode | null>(null)
+    // The node whose overview is open, by number: the panel follows it as the outline changes.
+    const [overviewOf, setOverviewOf] = useState<string | null>(null)
     // The changes that wait, in the diff view or not: their marks turn when they are accepted.
     const unopened = useMemo(() => new Set(actions.pending.keys()), [actions.pending])
     // The kind marks that changed as a change was accepted.
     const [pulse, setPulse] = useState<Map<string, MarksChange>>(new Map())
+    const notify = useNotify()
+    // A server from before topics sends none.
+    const lifecycle = outline.lifecycle ?? NO_LIFECYCLE
+    const act = useMemo(() => {
+        const post = (body: unknown) => api(`/api/outline/${outlineApiPath(outline.project, outline.file)}/act`, body).catch((e: Error) => notify(e.message, true))
+        return {
+            onStage: (topic: string, name: StageName, on: boolean) => void post({ stage: { topic, name, on } }),
+            onReopen: (stage: string) => void post({ reopen: stage }),
+            onMerge: (num: string, into: string) => void post({ merge: { num, into } }),
+        }
+    }, [outline.project, outline.file, notify])
     const ctx = useMemo<OutlineContext>(() => {
         // The marks are those of the outline as it is shown: a node whose change waits keeps the kind it was read with.
         const statuses = new Statuses(shown, viewer.overrides, outline.mode, new Set(outline.unacked), unopened)
-        const isOpen = isOpenIn(viewer.open, statuses)
+        const isOpen = isOpenIn(viewer.open, statuses, lifecycle.stages)
         return {
             ...actions,
+            ...act,
+            lifecycle,
+            layoutOf: (topic: OutlineNode) => viewer.layout?.[topic.id ?? topic.num] ?? 'stage',
+            onLayout: (topic: OutlineNode, layout: TopicLayout) => onViewer({ layout: { [topic.id ?? topic.num]: layout === 'stage' ? null : layout } }),
+            nodeByNum: new Map(allNodes(shown).map(n => [n.num, n])),
+            onOverview: (node: OutlineNode) => setOverviewOf(node.num),
             onHistory: setHistoryOf,
             statuses,
             // The first item about a node, as the queue column lists them.
@@ -102,8 +134,9 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
             toggle: node => onToggle(node, !isOpen(node)),
             current: currentPath(shown),
             runs: viewer.runs,
+            links: linksByNum(outline.nodes),
         }
-    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle])
+    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, viewer.layout, actions, unopened, pulse, onToggle, onViewer, act, lifecycle])
 
     // Accepting a change turns the marks it held back: each one that differs from before grows and shrinks once. What
     // it was is the outline as it was shown with the change not accepted, so only the click makes a difference.
@@ -161,6 +194,20 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [shown, ctx.statuses])
 
+    // A ripple that reaches a collapsed stage opens it, also one the viewer had closed: it holds what needs review.
+    const reviewing = useRef<Set<string> | null>(null)
+    useEffect(() => {
+        const now = new Set(Object.entries(lifecycle.stages).filter(([, s]) => s.status === 'needs-review').map(([num]) => num))
+        const before = reviewing.current
+        reviewing.current = now
+        if (!before) return
+        for (const n of allNodes(shown)) if (now.has(n.num) && !before.has(n.num) && !ctx.isOpen(n)) onToggle(n, true)
+        // Only a change of which stages need review matters.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lifecycle])
+
+    const overviewNode = overviewOf ? (allNodes(outline.nodes).find(n => n.num === overviewOf) ?? null) : null
+
     // The header stack follows scrolling, resizing, and every change of the content.
     useLayoutEffect(() => {
         const el = root.current
@@ -190,6 +237,19 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
 
     return (
         <OutlineCtx.Provider value={ctx}>
+            {overviewNode && (
+                <Overview
+                    node={overviewNode}
+                    trace={overviewNode.tags.includes('topic') ? topicTraceOf(overviewNode, outline.nodes, lifecycle) : traceOf(overviewNode, outline.nodes, ctx.links)}
+                    bottom={actions.linked ? 'var(--composer-h, 60px)' : '0px'}
+                    onShow={num => {
+                        // On a narrow window the panel covers the outline: it makes way for the node.
+                        if (window.matchMedia('(max-width: 720px)').matches) setOverviewOf(null)
+                        actions.onReveal(num)
+                    }}
+                    onClose={() => setOverviewOf(null)}
+                />
+            )}
             {historyOf && <NodeHistory project={outline.project} file={outline.file} node={historyOf} bottom={actions.linked ? 'var(--composer-h, 60px)' : '0px'} onClose={() => setHistoryOf(null)} />}
             <div ref={root} className="outline-tab" data-ck={SHOW_TITLE_CHECKBOX ? undefined : 'hidden'}>
                 {outline.untitled && (
@@ -212,7 +272,11 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
                         )}
                     </p>
                 )}
-                {withRemoved(shown, actions.removedIn('')).map(n => (isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} topic /> : <Topic key={n.num} node={n} />))}
+                {hasTopics(shown) ? (
+                    <LifecycleView nodes={shown} removed={actions.removedIn('')} stageView={viewer.stageView} onStageView={stageView => onViewer({ stageView })} />
+                ) : (
+                    withRemoved(shown, actions.removedIn('')).map(n => (isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} topic /> : <Topic key={n.num} node={n} />))
+                )}
             </div>
         </OutlineCtx.Provider>
     )

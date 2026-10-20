@@ -84,12 +84,24 @@ function extractQueue(source) {
 
 /**
  * The outline's nodes are its headings: `# 2. @user-approved Title` is a topic, `## 2.1 @agent-claim @options Title` a node under
- * it, down to `######`. A node's text is everything up to the next heading, rendered as ordinary markdown (bullets
+ * it, down to `######`, which also writes the nodes past the sixth level (server mode): their number says how deep they are. A node's text is everything up to the next heading, rendered as ordinary markdown (bullets
  * included). Status and the other tags sit on the heading line, right after the number.
  */
 export const HEAD_RE = /^(\d+(?:\.\d+)*)\.?(?:\s+|$)([\s\S]*)$/
 // A longer name comes before the name it starts with (`task-done` before `task`), or the shorter one would match.
-export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran)\b\s*/i
+export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|topic|stage-done|plan-item|needs-review|(?:id|links|stages|stage|depends):[a-z0-9,]*[a-z0-9])\b\s*/i
+/**
+ * The tags of the lifecycle (server mode), whose values `VALUE_TAG` splits off their names:
+ * - `@id:k3x9q2`: a node's stable id, which links hold. A node gets one the first time a link points at it.
+ * - `@links:k3x9q2,b7c1d0`: the ids of the nodes a node comes from.
+ * - `@topic @stages:discussion,plan`: a topic, with the stages that are on for it.
+ * - `@stage:plan`: a stage of the topic above it, numbered by its place in the lifecycle; `@stage-done` once the agent
+ *   closed a Discussion or a Plan.
+ * - `@plan-item`: a node of a Plan stage that says what will be done.
+ * - `@depends:k3x9q2`: on a topic, the ids of the topics the agent said it waits for.
+ * - `@needs-review`: a change upstream reached the node (a ripple), and the agent has not looked at it since.
+ */
+export const VALUE_TAG = /^(id|links|stages|stage|depends):([a-z0-9,]+)$/i
 /** `@option_A`: the node is option A of the question above it. The letter is in the tag, where it cannot be mistyped into the title. */
 export const OPTION_RE = /^option[_-]([a-z])$/i
 /**
@@ -123,15 +135,32 @@ function headNode(text, level) {
     let rest = m ? m[2] : text.trim()
     const tags = new Set()
     let option = ''
+    const values = {}
     for (let t; (t = rest.match(TAG_RE)); rest = rest.slice(t[0].length)) {
         const letter = t[1].match(OPTION_RE)
-        if (letter) {
+        const value = t[1].match(VALUE_TAG)
+        if (value) values[value[1].toLowerCase()] = value[2].toLowerCase()
+        else if (letter) {
             option = letter[1].toUpperCase()
             tags.add('option')
         } else for (const name of TAG_NAMES[t[1].toLowerCase()] ?? [t[1].toLowerCase()]) tags.add(name)
     }
     // The title reads as outlines wrote it before the tag, `(A) Title`, so the page and the messages it sends name the option the same way.
-    return { level, num: m ? m[1] : '', title: option ? `(${option}) ${rest.trim()}` : rest.trim(), option, tags, body: [], children: [], start: 0, end: 0 }
+    return {
+        level,
+        num: m ? m[1] : '',
+        title: option ? `(${option}) ${rest.trim()}` : rest.trim(),
+        option,
+        tags,
+        id: values.id ?? '',
+        links: values.links ? values.links.split(',').filter(Boolean) : [],
+        stage: values.stage ?? '',
+        stages: values.stages ? values.stages.split(',').filter(Boolean) : [],
+        body: [],
+        children: [],
+        start: 0,
+        end: 0,
+    }
 }
 
 /**
@@ -140,7 +169,7 @@ function headNode(text, level) {
  */
 function parseOutline(source) {
     const tokens = md.parse(source, {})
-    const root = { level: 0, num: '', title: '', tags: new Set(), body: [], children: [], start: 0, end: 0 }
+    const root = { level: 0, num: '', title: '', tags: new Set(), links: [], stages: [], body: [], children: [], start: 0, end: 0 }
     const stack = [root]
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i]
@@ -148,7 +177,11 @@ function parseOutline(source) {
             stack[stack.length - 1].body.push(t)
             continue
         }
-        const node = headNode(tokens[i + 1].content, Number(t.tag.slice(1)))
+        const hashes = Number(t.tag.slice(1))
+        const node = headNode(tokens[i + 1].content, hashes)
+        // Past six levels a heading is written with six `#` signs, and its number says how deep it is.
+        const depth = node.num ? node.num.split('.').length : 0
+        if (hashes === 6 && depth > 6) node.level = depth
         node.start = t.map[0]
         while (stack[stack.length - 1].level >= node.level) stack.pop().end = node.start
         stack[stack.length - 1].children.push(node)
@@ -214,7 +247,9 @@ export function countCheckboxProgress(source) {
     }
     const walk = node =>
         node.children.forEach(n => {
-            if (isQuestion(n)) count(questionStatus(n))
+            // A topic's heading and a stage's are the outline's structure: what counts is under them.
+            if (n.tags.has('topic') || n.stage) walk(n)
+            else if (isQuestion(n)) count(questionStatus(n))
             else if (n.children.length) walk(n)
             else count(statusOf(n))
         })
@@ -272,6 +307,10 @@ function nodeJson(node, lines) {
         tags: [...node.tags],
         status: STATUS[statusOf(node)],
         ...(node.option ? { option: node.option } : {}),
+        ...(node.id ? { id: node.id } : {}),
+        ...(node.links.length ? { links: node.links } : {}),
+        ...(node.stage ? { stage: node.stage } : {}),
+        ...(node.tags.has('topic') ? { stages: node.stages } : {}),
         title: plainTitle(node.title),
         titleHtml: md.renderInline(node.title),
         html,

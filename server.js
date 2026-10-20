@@ -15,7 +15,7 @@ import { LEDGER_DIR, createAgentApi, markLedgered } from './agent.js'
 import { ACTIONS_DIR } from './actions.js'
 import { createPermissions } from './permission.js'
 import { createSwitches } from './switching.js'
-import { OpError } from './model.js'
+import { OpError, lifecycleOf, parseOutline } from './model.js'
 
 installLogging()
 const config = loadConfig()
@@ -251,14 +251,17 @@ function outlineFile(project, file) {
 function readOutline(project, file) {
     const full = outlineFile(project, file)
     if (!full) return null
-    const outline = outlinePayload(fs.readFileSync(full, 'utf8'), { markdown: true })
+    const text = fs.readFileSync(full, 'utf8')
+    const outline = outlinePayload(text, { markdown: true })
     // In server mode a tick is pending until the agent acknowledges it (agent.js); in file mode the page works it out.
     const unacked = outline.mode === 'server' ? agent.unacknowledged(project, file) : []
     // Only the server gives a placeholder title: an outline in file mode has the title its agent wrote.
     const untitled = outline.mode === 'server' && agent.untitled(project, file)
     // The changes that wait on the page: the server knows what its agent took out, and when it changed each node.
     const { removed, changedAt } = outline.mode === 'server' ? agent.changes(project, file) : { removed: [], changedAt: {} }
-    return { project, file, ...outline, unacked, untitled, removed: removed.map(t => ({ ...t, titleHtml: inlineHtml(t.title) })), changedAt, folder: (outline.session && sessionFolder(outline.session)) || '', terminalTab: terminalEnabled && !!outline.terminal }
+    // Server mode: the outline's topics and stages, with where each stage stands, as the server's rules say (model.js).
+    const lifecycle = outline.mode === 'server' ? lifecycleOf(parseOutline(text)) : { topics: {}, stages: {} }
+    return { project, file, ...outline, lifecycle, unacked, untitled, removed: removed.map(t => ({ ...t, titleHtml: inlineHtml(t.title) })), changedAt, folder: (outline.session && sessionFolder(outline.session)) || '', terminalTab: terminalEnabled && !!outline.terminal }
 }
 
 /**
@@ -268,8 +271,8 @@ function readOutline(project, file) {
  */
 function withUserActs(entries, acts) {
     const out = entries.map(e => ({ ...e }))
-    for (const { at, what, kind } of acts) {
-        const did = { what, kind }
+    for (const { at, what, kind, stage, from } of acts) {
+        const did = { what, kind, ...(stage ? { stage } : {}), ...(from ? { from } : {}) }
         const written = out.find(e => e.at >= at && e.at - at < 1500)
         if (written) (written.did ??= []).push(did)
         else {

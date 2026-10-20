@@ -13,7 +13,7 @@ What is kept for an outline session and the page shows: its title, its nodes and
 _Avoid_: Mirror, notes, file (the file is how an outline is stored, in both modes)
 
 **Operation**:
-One change an agent asks of an outline in server mode: add, update, move or remove a node, record what the user decided in chat, finish a task, acknowledge the user's ticks, post a message, or order the queue.
+One change an agent asks of an outline in server mode: add, update, move or remove a node, record what the user decided in chat, finish a task, turn a topic's stages on, close a Discussion or a Plan, set the topics a topic waits for, say that a node a ripple reached still holds, split a topic, add a line to the topic notes, acknowledge the user's ticks, post a message, or order the queue.
 _Avoid_: Edit, command, patch
 
 **Map**:
@@ -113,7 +113,7 @@ The user's own mark on a node, shown by the tick in its box. It is the only tick
 _Avoid_: Status, checkbox, resolved, agent-approved, done, and a bare "approved" (it does not say who approved), pending human approval (the human has approved; the agent has not recorded it)
 
 **Action log**:
-The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, turned it off (a stage), each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
+The record of the user's actions on each node of an outline in server mode, in order: approved it, took the approval back, picked it, ran it, turned it off or on (a stage), reopened it (a Discussion or a Plan), merged another topic into it (a topic), each with the kind and the wording the node had then. Nothing is taken out of it, and it follows a node when numbers shift. The node's history shows it.
 _Avoid_: Approval log (it holds picks and runs too), audit log, undo history (undo is the viewer state's steps)
 
 **Question**:
@@ -180,7 +180,7 @@ The agent's stored log of a session's messages and tool calls.
 _Avoid_: History, log
 
 **Action**:
-Something the user does on a node of the outline: approve it, pick an option, run a task, turn a stage off, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
+Something the user does on a node of the outline: approve it, pick an option, run a task, turn a stage on or off, reopen a stage, merge two topics, or read it. Only the user acts in this sense: what the agent does is a task. The agent never performs one. It can ask for an approval, on the node; the other actions a node waits for follow from what the node is (a pending action).
 _Avoid_: Task (that is the agent's), and "action" for anything the agent does
 
 **Task**:
@@ -252,7 +252,7 @@ The tab that shows the linked session's transcript as rendered messages.
 _Avoid_: Chat tab, chat view
 
 **Viewer state**:
-What the page remembers for the user about one outline (open nodes, what was read, undo steps, seen messages, the input box's draft, the tab shown, the order of the change indicators, and in file mode the approvals still pending), kept by the server so every window on the outline shows the same.
+What the page remembers for the user about one outline (open nodes, what was read, undo steps, seen messages, the input box's draft, the tab shown, the order of the change indicators, each topic's topic layout and the stage view, and in file mode the approvals still pending), kept by the server so every window on the outline shows the same.
 _Avoid_: Local storage, preferences, settings (that is the settings file)
 
 **Input box**:
