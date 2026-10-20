@@ -422,3 +422,58 @@ describe('topics and stages', () => {
         assert.deepEqual(countCheckboxProgress(text), { total: 2, done: 0, agent: 1, open: 1 })
     })
 })
+
+describe('dependencies', () => {
+    /** An outline with three topics, each with Discussion and Plan, and a node in each stage. */
+    function three() {
+        const model = outline('')
+        const ops = []
+        for (const [num, title] of [['1', 'Search'], ['2', 'Rollout'], ['3', 'Billing']])
+            ops.push(
+                { op: 'add', num, title, stages: ['discussion', 'plan'] },
+                { op: 'add', num: `${num}.1.1`, title: `${title} decision`, status: 'claim' },
+                { op: 'add', num: `${num}.2.1`, title: `${title} plan`, plan: true },
+            )
+        change(model, ops)
+        return model
+    }
+
+    test('the agent sets the topics a topic waits for, and a link into another topic makes one by itself', () => {
+        const model = three()
+        change(model, [{ op: 'depends', num: '3', on: ['1'] }])
+        assert.match(serializeOutline(model), /^# 3\. @current @topic @stages:discussion,plan @depends:[a-z0-9]{6} @id:[a-z0-9]{6} Billing$/m)
+        change(model, [{ op: 'update', num: '3.2.1', links: ['2.1.1'] }])
+        assert.deepEqual(lifecycleOf(model).topics['3'].waitsFor, ['1', '2'])
+        assert.deepEqual(lifecycleOf(model).topics['1'].waitsFor, [])
+        assert.match(mapText(model), /^3 Billing \[topic, stages on: discussion, plan; waits for 1, 2\]/m)
+        // The list replaces the one it had.
+        change(model, [{ op: 'depends', num: '3', on: [] }])
+        assert.deepEqual(lifecycleOf(model).topics['3'].waitsFor, ['2'])
+    })
+
+    test('dependencies never form a loop, whether set or made by links', () => {
+        const model = three()
+        change(model, [{ op: 'depends', num: '2', on: ['1'] }, { op: 'depends', num: '3', on: ['2'] }])
+        refused(model, [{ op: 'depends', num: '1', on: ['3'] }], /would wait for each other in a loop: 1 waits for 3 waits for 2 waits for 1/, /never form a loop/)
+        refused(model, [{ op: 'update', num: '1.2.1', links: ['3.1.1'] }], /in a loop: 1 waits for 3 waits for 2 waits for 1/)
+        refused(model, [{ op: 'depends', num: '1', on: ['1'] }], /cannot wait for itself/)
+        refused(model, [{ op: 'depends', num: '1', on: ['1.1.1'] }], /1\.1\.1 is not a topic/, /2 Rollout; 3 Billing/)
+        refused(model, [{ op: 'depends', on: ['2'] }], /A depends operation needs the number of its topic/, /The topics are: 1 Search; 2 Rollout; 3 Billing/)
+    })
+
+    test('a subtopic’s link to a decision its Discussion shares makes no dependency', () => {
+        const model = three()
+        change(model, [{ op: 'add', num: '1.1.2', title: 'Indexing', stages: ['discussion', 'plan'] }, { op: 'add', num: '1.1.2.2.1', title: 'Index plan', plan: true, links: ['1.1.1'] }])
+        assert.deepEqual(lifecycleOf(model).topics['1.1.2'].waitsFor, [])
+    })
+
+    test('a topic taken out is no longer waited for, with a note', () => {
+        const model = three()
+        change(model, [{ op: 'depends', num: '3', on: ['1', '2'] }])
+        const result = change(model, [{ op: 'remove', num: '1' }])
+        assert.deepEqual(result.notes, ['2 no longer waits for 1, which was taken out.'])
+        assert.deepEqual(lifecycleOf(model).topics['2'].waitsFor, ['1'])
+        assert.equal(lifecycleOf(model).topics['1'].title, 'Rollout')
+    })
+})
+

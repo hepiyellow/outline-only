@@ -49,7 +49,7 @@ export function headingLevel(hashes, num) {
 }
 
 function blankNode(level) {
-    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], topic: false, stages: [], stage: '', stageDone: false, planItem: false, text: '', summary: '', recommendation: '', taskLine: '', children: [] }
+    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], topic: false, stages: [], depends: [], stage: '', stageDone: false, planItem: false, text: '', summary: '', recommendation: '', taskLine: '', children: [] }
 }
 
 /** A heading line's number, tags and title, as a node without text. */
@@ -66,6 +66,7 @@ function headingNode(content, level) {
         else if (value?.[1] === 'links') node.links = value[2].split(',').filter(Boolean)
         else if (value?.[1] === 'stages') node.stages = value[2].split(',').filter(Boolean)
         else if (value?.[1] === 'stage') node.stage = value[2]
+        else if (value?.[1] === 'depends') node.depends = value[2].split(',').filter(Boolean)
         else if (name === 'topic') node.topic = true
         else if (name === 'stage-done') node.stageDone = true
         else if (name === 'plan-item') node.planItem = true
@@ -167,6 +168,7 @@ function headingLine(node) {
         node.task === 'failed' && '@task-failed',
         node.topic && '@topic',
         node.topic && `@stages:${node.stages.join(',')}`,
+        node.depends.length && `@depends:${node.depends.join(',')}`,
         node.stage && `@stage:${node.stage}`,
         node.stageDone && '@stage-done',
         node.planItem && '@plan-item',
@@ -381,16 +383,70 @@ export function stageStatus(topic, stage) {
     return { status: tasks.length && done === tasks.length ? 'done' : 'active', progress: { done, total: tasks.length } }
 }
 
+/** The topic a node sits in: the nearest above it (a topic's heading sits in its own). */
+function topicOf(model, num, index = indexOf(model)) {
+    const node = index.get(num)?.node
+    return node?.topic ? node : placeOf(model, num, index).topic
+}
+
 /**
- * The lifecycle as the page and the map show it: each topic (`topics`, by number: its id, title and the stages on)
+ * Each topic's dependencies, by its number: the numbers of the topics it waits for. Those the agent set (`@depends:`),
+ * and those its links make: a node of one topic that links into another makes its topic wait for that one, unless one
+ * of the two holds the other (a subtopic's link to a decision its Discussion shares is not one).
+ */
+export function dependenciesOf(model) {
+    const index = indexOf(model)
+    const ids = byId(model)
+    const out = new Map(allTopics(model).map(t => [t.num, new Set(t.depends.map(id => ids.get(id)?.num).filter(Boolean))]))
+    for (const n of allNodes(model.nodes)) {
+        if (!n.links.length) continue
+        const from = topicOf(model, n.num, index)
+        if (!from) continue
+        for (const target of linkedFrom(model, n, ids)) {
+            const to = topicOf(model, target.num, index)
+            if (!to || to === from || from.num.startsWith(`${to.num}.`) || to.num.startsWith(`${from.num}.`)) continue
+            out.get(from.num).add(to.num)
+        }
+    }
+    return new Map([...out].map(([num, on]) => [num, [...on].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))]))
+}
+
+/** A loop of dependencies, as the topics' numbers from one round to the same (`1, 2, 1`), or undefined when there is none. */
+function dependencyLoop(deps) {
+    const state = new Map()
+    const path = []
+    const visit = num => {
+        if (state.get(num) === 'done') return undefined
+        if (state.get(num) === 'on') return [...path.slice(path.indexOf(num)), num]
+        state.set(num, 'on')
+        path.push(num)
+        for (const next of deps.get(num) ?? []) {
+            const loop = visit(next)
+            if (loop) return loop
+        }
+        path.pop()
+        state.set(num, 'done')
+        return undefined
+    }
+    for (const num of deps.keys()) {
+        const loop = visit(num)
+        if (loop) return loop
+    }
+    return undefined
+}
+
+/**
+ * The lifecycle as the page and the map show it: each topic (`topics`, by number: its id, title, the stages on and the
+ * topics it waits for)
  * and each stage heading (`stages`, by number: its topic, name, whether it is on, its status and progress, and `next`
  * on the first stage of a topic that is on and not started yet). Empty for an outline without topics.
  */
 export function lifecycleOf(model) {
+    const deps = dependenciesOf(model)
     const topics = {}
     const stages = {}
     const walk = topic => {
-        topics[topic.num] = { id: topic.id, title: topic.title, stages: [...topic.stages] }
+        topics[topic.num] = { id: topic.id, title: topic.title, stages: [...topic.stages], waitsFor: deps.get(topic.num) ?? [] }
         let next = false
         for (const stage of topic.children) {
             if (!stage.stage) continue
@@ -448,9 +504,9 @@ export function statusOf(node) {
 
 const label = node => `${node.num} ${node.option ? `(${node.option}) ` : ''}${node.title}`
 
-/** What a node is, in the glossary's words, for the map and for reads. */
-function describe(node, parent) {
-    if (node.topic) return `topic, stages on: ${node.stages.join(', ')}`
+/** What a node is, in the glossary's words, for the map and for reads; `waits`, a topic's dependencies. */
+function describe(node, parent, waits) {
+    if (node.topic) return `topic, stages on: ${node.stages.join(', ')}${waits?.length ? `; waits for ${waits.join(', ')}` : ''}`
     if (node.stage && parent?.topic) {
         const { status, progress } = stageStatus(parent, node)
         return ['stage', status.replace('-', ' '), progress && `${progress.done} of ${progress.total} tasks done`].filter(Boolean).join(', ')
@@ -475,6 +531,7 @@ const MAP_ALL = 80
 export function mapText(model, around = []) {
     const index = indexOf(model)
     const ids = byId(model)
+    const deps = hasTopics(model) ? dependenciesOf(model) : new Map()
     const total = allNodes(model.nodes).length
     const shown = new Set()
     if (total > MAP_ALL) {
@@ -495,7 +552,7 @@ export function mapText(model, around = []) {
                 continue
             }
             const from = linkedFrom(model, n, ids).map(l => l.num)
-            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent)}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
+            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent, deps.get(n.num))}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
             walk(n.children, n, depth + 1)
         }
         if (hidden) lines.push(`${'  '.repeat(depth)}… ${hidden} more under ${parent.num} (read ${parent.num} to see them)`)
@@ -506,7 +563,7 @@ export function mapText(model, around = []) {
 
 /** One node in full, as `read` returns it, with its links by the numbers the nodes have now. */
 function nodeText(model, node, parent) {
-    const lines = [`${label(node)} [${describe(node, parent)}]`]
+    const lines = [`${label(node)} [${describe(node, parent, node.topic ? dependenciesOf(model).get(node.num) : undefined)}]`]
     const links = linkLine(model, node)
     if (links) lines.push(`Links: ${links}`)
     if (node.text) lines.push(node.text)
@@ -1171,8 +1228,12 @@ export function applyOperations(model, ops, shown = {}) {
             result.ordered = result.ordered.filter(num => !gone.includes(num))
             const goneIds = new Map(allNodes([node]).filter(n => n.id).map(n => [n.id, n.num]))
             renumbered(closeGap(from, parent))
-            // A link to a node that is gone goes with it.
+            // A link to a node that is gone goes with it, and so does a dependency on a topic that is gone.
             for (const n of allNodes(model.nodes)) {
+                if (n.depends.some(id => goneIds.has(id))) {
+                    result.notes.push(`${n.num} no longer waits for ${n.depends.filter(id => goneIds.has(id)).map(id => goneIds.get(id)).join(', ')}, which ${n.depends.filter(id => goneIds.has(id)).length === 1 ? 'was' : 'were'} taken out.`)
+                    n.depends = n.depends.filter(id => !goneIds.has(id))
+                }
                 const dropped = n.links.filter(id => goneIds.has(id))
                 if (!dropped.length) continue
                 n.links = n.links.filter(id => !goneIds.has(id))
@@ -1260,6 +1321,23 @@ export function applyOperations(model, ops, shown = {}) {
             touch(topic.num)
         },
 
+        // Sets the topics a topic waits for, replacing those it had: it cannot go on until they are done. A link into
+        // another topic makes one by itself. Dependencies never form a loop.
+        depends(op) {
+            const topic = topicFor(op.num, 'A depends operation')
+            if (!topic) throw new OpError('This outline has one topic, which waits for nothing.', 'Add the topic it would wait for first.')
+            if (!Array.isArray(op.on)) throw new OpError(`The dependencies of ${topic.num} are not a list.`, 'Pass on: ["2", …]: the numbers of the topics it waits for ([] for none).')
+            const ids = []
+            for (const num of op.on) {
+                const { node } = get(num, 'topic')
+                if (!node.topic) throw new OpError(`${num} is not a topic.`, `A topic waits for topics: ${allTopics(model).filter(t => t !== topic).map(t => `${t.num} ${t.title}`).join('; ') || 'there is no other'}.`)
+                if (node === topic) throw new OpError(`${topic.num} cannot wait for itself.`)
+                if (!ids.includes(idOf(model, node))) ids.push(node.id)
+            }
+            topic.depends = ids
+            touch(topic.num)
+        },
+
         // Closes a Discussion or a Plan: the agent's word that its deciding or planning is done. A doing stage is done
         // once its tasks are. A node added to it opens it again.
         done(op) {
@@ -1314,6 +1392,12 @@ export function applyOperations(model, ops, shown = {}) {
             if (!run) throw new OpError(`${JSON.stringify(op?.op)} is not an operation.`, `The operations are ${Object.keys(apply).join(', ')}.`)
             run(op)
             checkUpstream()
+            const loop = hasTopics(model) && dependencyLoop(dependenciesOf(model))
+            if (loop)
+                throw new OpError(
+                    `The topics would wait for each other in a loop: ${loop.join(' waits for ')}.`,
+                    'Dependencies never form a loop: a topic waits only for what has to be done before it. Drop the dependency (or the link into the other topic) that is wrong.',
+                )
         } catch (e) {
             if (e instanceof OpError) e.message = `Operation ${i + 1} of ${ops.length} (${op?.op ?? '?'}${op?.num ? ` ${op.num}` : ''}): ${e.message}`
             throw e

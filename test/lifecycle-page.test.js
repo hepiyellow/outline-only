@@ -184,4 +184,21 @@ describe('the lifecycle on the page', () => {
         await until(() => /^## 1\.1 @stage:discussion Discussion$/m.test(text()), { what: 'Discussion to be reopened' })
         await until(async () => (await stage('1.1').getAttribute('data-status')) === 'active', { what: 'Discussion to be active' })
     })
+
+    test('a topic shows the topics it waits for as a badge, each a click to it, and keeps its place', async () => {
+        await show(
+            'waits',
+            `# 1. @topic @stages:discussion @id:topica Search\n\n## 1.1 @stage:discussion Discussion\n\n### 1.1.1 @agent-claim @id:aaaaa1 Use Redis\n\n# 2. @topic @stages:discussion @id:topicb Billing\n\n## 2.1 @stage:discussion Discussion\n\n### 2.1.1 @links:aaaaa1 Bill per request\n\n# 3. @topic @stages:discussion @depends:topica,topicb @id:topicc Rollout\n\n## 3.1 @stage:discussion Discussion\n`,
+        )
+        assert.equal(await page.locator('[data-topic="2"] > .topic-head .waits-for').textContent(), 'waits for 1')
+        assert.equal(await page.locator('[data-topic="3"] > .topic-head .waits-for').textContent(), 'waits for 1, 2')
+        assert.equal(await page.locator('[data-topic="1"] > .topic-head .waits-for').count(), 0)
+        // Topics stay in their order.
+        assert.deepEqual(await page.locator('.lc-topic').evaluateAll(els => els.map(el => el.dataset.topic)), ['1', '2', '3'])
+        // A click on a number opens that topic.
+        await page.locator('[data-topic="1"] > .topic-head .node-title').click()
+        assert.equal(await node('1.1.1').isVisible(), false)
+        await page.locator('[data-topic="2"] > .topic-head .waits-for button').click()
+        await until(() => node('1.1.1').isVisible(), { what: 'topic 1 to open' })
+    })
 })

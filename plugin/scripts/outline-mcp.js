@@ -73,6 +73,7 @@ const TOOLS = [
             '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered, and a link to a node taken out is dropped.',
             '- record { num, decision, stage? }: what the user decided in chat. approve, reopen, or pick (num is the option); stage-off with stage when the user said to turn a stage of topic num off (it keeps its nodes, folded away; adapt the topic to it). Only what the user said, never your own judgment.',
             '- stages { num?, on }: turns stages of topic num on (num left out: the outline\'s one topic). You never turn one off: only the user does.',
+            '- depends { num, on }: the topics topic num waits for, by number, replacing those it had ([] for none): it cannot go on until they are done. A link from a node into another topic makes its topic wait for that one by itself. Dependencies never form a loop. Topics are never reordered for them.',
             '- done { num }: closes the Discussion or Plan stage num: its deciding or planning is done. Refused while a Discussion holds an unresolved question. Implementation, Verification and Preservation are done once their tasks are.',
             '- finish { num, outcome, failed? }: you carried out what the node describes, so it shows as a task done; outcome says what happened. The node is a task the user ran, or any node about something the user asked you in chat to do.',
             '- acknowledge {}: you took in the ticks the user made on the page and nothing in the outline follows from them. Any change made after you were told of a tick acknowledges it, so send this only in a change that holds nothing else.',
@@ -88,7 +89,7 @@ const TOOLS = [
                     items: {
                         type: 'object',
                         properties: {
-                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'done', 'acknowledge', 'message', 'queue'] },
+                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'depends', 'done', 'acknowledge', 'message', 'queue'] },
                             num: { ...text, description: 'Full-path node number, e.g. 2.1.3.' },
                             ...NODE,
                             options: { type: 'array', items: OPTION, description: 'add: the options of a question, at least two; at most one recommended.' },
@@ -97,7 +98,7 @@ const TOOLS = [
                             under: { ...text, description: 'move: the number of the new parent, or "" for the top level.' },
                             decision: { enum: ['approve', 'reopen', 'pick', 'stage-off'], description: 'record.' },
                             stages: { type: 'array', items: STAGE, description: 'add: makes the node a topic, with these stages on, in the lifecycle\'s order.' },
-                            on: { type: 'array', items: STAGE, description: 'stages: the stages to turn on.' },
+                            on: { type: 'array', items: text, description: 'stages: the stages to turn on. depends: the numbers of the topics it waits for.' },
                             stage: { ...STAGE, description: 'record with stage-off: the stage the user turned off.' },
                             plan: { type: 'boolean', description: 'add, update: the node is a plan item: it says what will be done, sits in a Plan stage, and has no Run button. Its tasks in Implementation link to it.' },
                             outcome: { ...text, description: 'finish, or an add of something you already did: what happened, in one or two sentences.' },

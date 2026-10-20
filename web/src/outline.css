@@ -792,3 +792,13 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
     font-size: 0.85em;
     font-style: italic;
 }
+/* A topic's dependencies: the topics it waits for. */
+.waits-for {
+    flex: none;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--claim) 50%, transparent);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 500;
+}

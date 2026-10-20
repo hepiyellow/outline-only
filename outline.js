@@ -89,7 +89,7 @@ function extractQueue(source) {
  */
 export const HEAD_RE = /^(\d+(?:\.\d+)*)\.?(?:\s+|$)([\s\S]*)$/
 // A longer name comes before the name it starts with (`task-done` before `task`), or the shorter one would match.
-export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|topic|stage-done|plan-item|(?:id|links|stages|stage):[a-z0-9,]*[a-z0-9])\b\s*/i
+export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval|option[_-][a-z]|options|recommended|current|task-done|task-failed|task|action-done|action-failed|action|ran|topic|stage-done|plan-item|(?:id|links|stages|stage|depends):[a-z0-9,]*[a-z0-9])\b\s*/i
 /**
  * The tags of the lifecycle (server mode), whose values `VALUE_TAG` splits off their names:
  * - `@id:k3x9q2`: a node's stable id, which links hold. A node gets one the first time a link points at it.
@@ -98,8 +98,9 @@ export const TAG_RE = /^@(user-approved|approved|agent-claim|claim|asks-approval
  * - `@stage:plan`: a stage of the topic above it, numbered by its place in the lifecycle; `@stage-done` once the agent
  *   closed a Discussion or a Plan.
  * - `@plan-item`: a node of a Plan stage that says what will be done.
+ * - `@depends:k3x9q2`: on a topic, the ids of the topics the agent said it waits for.
  */
-export const VALUE_TAG = /^(id|links|stages|stage):([a-z0-9,]+)$/i
+export const VALUE_TAG = /^(id|links|stages|stage|depends):([a-z0-9,]+)$/i
 /** `@option_A`: the node is option A of the question above it. The letter is in the tag, where it cannot be mistyped into the title. */
 export const OPTION_RE = /^option[_-]([a-z])$/i
 /**

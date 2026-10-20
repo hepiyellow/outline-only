@@ -79,6 +79,37 @@ export function StageSwitches({ topic }: { topic: OutlineNode }) {
 }
 
 /**
+ * The topics a topic waits for, as a badge: "waits for 1, 2", each number a click to that topic. Topics are never
+ * reordered for it.
+ */
+function WaitsFor({ topic }: { topic: OutlineNode }) {
+    const { lifecycle, onReveal } = useOutlineCtx()
+    const on = lifecycle.topics[topic.num]?.waitsFor ?? []
+    if (!on.length) return null
+    return (
+        <span className="waits-for" data-waits-for={on.join(',')} title="It waits for these topics to be done">
+            waits for{' '}
+            {on.map((num, i) => (
+                <span key={num}>
+                    {i > 0 && ', '}
+                    <button
+                        type="button"
+                        className="link-num"
+                        title={`Go to ${num} ${lifecycle.topics[num]?.title ?? ''}`.trim()}
+                        onClick={e => {
+                            e.stopPropagation()
+                            onReveal(num, undefined, true)
+                        }}
+                    >
+                        {num}
+                    </button>
+                </span>
+            ))}
+        </span>
+    )
+}
+
+/**
  * A topic: a sticky heading with its number, title and stages, over its text and its stages. The outline's only
  * topic has no heading of its own (LifecycleView): its stages stand at the top.
  */
@@ -99,6 +130,7 @@ export function TopicSection({ node }: { node: OutlineNode }) {
                 <span className="node-title">
                     {node.num}. <span className="title-html" dangerouslySetInnerHTML={{ __html: node.titleHtml }} />
                 </span>
+                <WaitsFor topic={node} />
                 <StageSwitches topic={node} />
                 <Messages node={node} />
                 <Asks node={node} />

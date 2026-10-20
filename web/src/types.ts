@@ -67,7 +67,8 @@ export interface StageInfo {
 
 /** Server mode: the outline's topics and stages, by number. Both are empty for an outline without topics. */
 export interface Lifecycle {
-    topics: Record<string, { id: string; title: string; stages: StageName[] }>
+    /** Each topic: its id, title, the stages on, and the numbers of the topics it waits for (its dependencies). */
+    topics: Record<string, { id: string; title: string; stages: StageName[]; waitsFor: string[] }>
     stages: Record<string, StageInfo>
 }
 
