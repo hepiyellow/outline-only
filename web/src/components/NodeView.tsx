@@ -1,5 +1,5 @@
 import { createContext, useContext, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from 'react'
-import { Check, ChevronDown, ClipboardCopy, Copy, History, Reply, Sparkle, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ClipboardCopy, Copy, History, Network, Reply, Sparkle, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { copyText } from '@/lib/send'
 import type { Statuses } from '@/lib/status'
@@ -89,6 +89,8 @@ export interface OutlineContext {
     onLayout: (topic: OutlineNode, layout: TopicLayout) => void
     /** The outline's nodes as shown, by number. */
     nodeByNum: Map<string, OutlineNode>
+    /** Opens the overview of a node: its trace, in a panel at the side. */
+    onOverview: (node: OutlineNode) => void
 }
 
 export const OutlineCtx = createContext<OutlineContext | null>(null)
@@ -312,6 +314,27 @@ function HistoryButton({ node }: { node: OutlineNode }) {
     )
 }
 
+/** The node's overview, on hover: what it comes from and what comes from it, by stage, in a panel at the side. */
+function OverviewButton({ node }: { node: OutlineNode }) {
+    const { onOverview } = useOutlineCtx()
+    const what = node.tags.includes('topic') ? 'the topics it waits for and those waiting for it' : 'what it comes from and what comes from it'
+    return (
+        <button
+            type="button"
+            className="ask"
+            data-overview-of={node.num}
+            title={`Overview: ${what}`}
+            aria-label={`Trace of ${node.num}`}
+            onClick={e => {
+                e.stopPropagation()
+                onOverview(node)
+            }}
+        >
+            <Network className="size-3.5" />
+        </button>
+    )
+}
+
 /** Asks to take the node out of the outline, on hover: linked to a session, it waits in the input box for the user's reason. */
 function RemoveButton({ node }: { node: OutlineNode }) {
     const { linked, onRemove } = useOutlineCtx()
@@ -342,6 +365,7 @@ export function Asks({ node }: { node: OutlineNode }) {
             <Ask node={node} />
             <CopyMarkdownButton node={node} />
             <HistoryButton node={node} />
+            <OverviewButton node={node} />
             <RemoveButton node={node} />
             {under > 0 && (
                 <button
@@ -760,6 +784,7 @@ function Leaf({ node }: { node: OutlineNode }) {
                 <Ask node={node} />
                 <CopyMarkdownButton node={node} />
                 <HistoryButton node={node} />
+                <OverviewButton node={node} />
                 <RemoveButton node={node} />
             </span>
             <DiffBar node={node} />

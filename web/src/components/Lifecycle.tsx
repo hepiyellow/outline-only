@@ -338,7 +338,7 @@ export function LifecycleView({ nodes, removed, stageView, onStageView }: { node
 function StageViewBar({ nodes, view, onStageView }: { nodes: OutlineNode[]; view: NonNullable<ViewerState['stageView']>; onStageView: (view: NonNullable<ViewerState['stageView']>) => void }) {
     const topics = allNodes(nodes).filter(n => n.tags.includes('topic'))
     return (
-        <div className="lc-view" role="group" aria-label="Stage view">
+        <div className="lc-view" role="group" aria-label="Stages shown">
             <span className="lc-bar-label">View</span>
             <button type="button" data-stage-view="" aria-pressed={!view.stage} onClick={() => onStageView({ stage: '', topic: view.topic })}>
                 Outline

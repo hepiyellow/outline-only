@@ -2,11 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
+import { topicTraceOf, traceOf } from '@/lib/trace'
 import { cn } from '@/lib/utils'
 import type { Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
 import { api, outlineApiPath } from '@/lib/api'
 import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
 import { NodeHistory } from './NodeHistory'
+import { Overview } from './Overview'
 import { useNotify } from './Notice'
 import { OutlineCtx, RemovedRow, Topic, isRemoved, withRemoved, type OutlineContext } from './NodeView'
 import { waiting } from './queue'
@@ -88,6 +90,8 @@ const EMPTY = {
 export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer = () => {} }: Props) {
     const root = useRef<HTMLDivElement>(null)
     const [historyOf, setHistoryOf] = useState<OutlineNode | null>(null)
+    // The node whose overview is open, by number: the panel follows it as the outline changes.
+    const [overviewOf, setOverviewOf] = useState<string | null>(null)
     // The changes that wait, in the diff view or not: their marks turn when they are accepted.
     const unopened = useMemo(() => new Set(actions.pending.keys()), [actions.pending])
     // The kind marks that changed as a change was accepted.
@@ -112,6 +116,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
             layoutOf: (topic: OutlineNode) => viewer.layout?.[topic.id ?? topic.num] ?? 'stage',
             onLayout: (topic: OutlineNode, layout: TopicLayout) => onViewer({ layout: { [topic.id ?? topic.num]: layout === 'stage' ? null : layout } }),
             nodeByNum: new Map(allNodes(shown).map(n => [n.num, n])),
+            onOverview: (node: OutlineNode) => setOverviewOf(node.num),
             onHistory: setHistoryOf,
             statuses,
             // The first item about a node, as the queue column lists them.
@@ -199,6 +204,8 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lifecycle])
 
+    const overviewNode = overviewOf ? (allNodes(outline.nodes).find(n => n.num === overviewOf) ?? null) : null
+
     // The header stack follows scrolling, resizing, and every change of the content.
     useLayoutEffect(() => {
         const el = root.current
@@ -228,6 +235,19 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
 
     return (
         <OutlineCtx.Provider value={ctx}>
+            {overviewNode && (
+                <Overview
+                    node={overviewNode}
+                    trace={overviewNode.tags.includes('topic') ? topicTraceOf(overviewNode, outline.nodes, lifecycle) : traceOf(overviewNode, outline.nodes, ctx.links)}
+                    bottom={actions.linked ? 'var(--composer-h, 60px)' : '0px'}
+                    onShow={num => {
+                        // On a narrow window the panel covers the outline: it makes way for the node.
+                        if (window.matchMedia('(max-width: 720px)').matches) setOverviewOf(null)
+                        actions.onReveal(num)
+                    }}
+                    onClose={() => setOverviewOf(null)}
+                />
+            )}
             {historyOf && <NodeHistory project={outline.project} file={outline.file} node={historyOf} bottom={actions.linked ? 'var(--composer-h, 60px)' : '0px'} onClose={() => setHistoryOf(null)} />}
             <div ref={root} className="outline-tab" data-ck={SHOW_TITLE_CHECKBOX ? undefined : 'hidden'}>
                 {outline.untitled && (

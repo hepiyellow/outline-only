@@ -323,4 +323,70 @@ describe('the lifecycle on the page', () => {
         await page.locator('[data-stage-view=""]').click()
         await until(() => page.locator('.lc-topic').count().then(n => n === 2), { what: 'the outline as it is' })
     })
+
+    const overview = () => page.locator('.overview')
+    const openOverview = async num => {
+        await page.locator(`[data-overview-of="${num}"]`).first().click({ force: true })
+        await overview().waitFor()
+    }
+
+    test('the overview of a node is its trace: what it comes from and what comes from it, one band per stage, with lines', async () => {
+        await show('overview', PLAN_ITEMS)
+        await openOverview('1.3.2')
+        const bands = await overview().locator('[data-band]').evaluateAll(els => els.map(el => [el.dataset.band, [...el.querySelectorAll('[data-trace-num]')].map(b => `${b.dataset.traceNum} ${b.dataset.role}`)]))
+        assert.deepEqual(bands, [
+            ['discussion', ['1.1.1 from']],
+            ['plan', ['1.2.1 from', '1.2.2 from']],
+            ['implementation', ['1.3.2 self']],
+            ['verification', ['1.4.1 to']],
+        ])
+        assert.match(await overview().locator('[data-trace-num="1.3.2"]').getAttribute('class'), /self/)
+        assert.equal(await overview().locator('[data-trace-num="1.2.1"] .overview-box-topic').textContent(), 'Search')
+        await until(async () => (await overview().locator('path[data-edge]').count()) === 5, { what: 'a line per link' })
+        assert.deepEqual((await overview().locator('path[data-edge]').evaluateAll(els => els.map(el => el.dataset.edge))).sort(), ['1.1.1>1.2.1', '1.1.1>1.2.2', '1.2.1>1.3.2', '1.2.2>1.3.2', '1.3.2>1.4.1'])
+        // Only what led to the node and what was built on it: the other task of 1.2.1 is not in it.
+        await overview().locator('.overview-close').click()
+        await openOverview('1.3.1')
+        assert.deepEqual(await overview().locator('[data-trace-num]').evaluateAll(els => els.map(el => el.dataset.traceNum)), ['1.1.1', '1.2.1', '1.3.1'])
+        // A click on a box shows that node in the outline.
+        await page.locator('[data-topic="1"] > .topic-head .node-title').click()
+        assert.equal(await node('1.1.1').isVisible(), false)
+        await overview().locator('[data-trace-num="1.1.1"]').click()
+        await until(() => node('1.1.1').isVisible(), { what: '1.1.1 to be shown' })
+    })
+
+    test('a band with many boxes shows their count until opened; a topic’s overview is the topics it waits for and those waiting for it', async () => {
+        const tasks = Array.from({ length: 8 }, (_, i) => `### 1.3.${i + 1} @task @links:aaaaa2 Task ${i + 1}\n\n@Task. Does it.\n`).join('\n')
+        await show(
+            'many',
+            `# 1. @topic @stages:discussion,plan,implementation @id:topica Search\n\n## 1.1 @stage:discussion Discussion\n\n### 1.1.1 @agent-claim Use Redis\n\n## 1.2 @stage:plan Plan\n\n### 1.2.1 @plan-item @id:aaaaa2 Size it\n\n## 1.3 @stage:implementation Implementation\n\n${tasks}\n# 2. @topic @stages:discussion @depends:topica @id:topicb Rollout\n\n## 2.1 @stage:discussion Discussion\n\n# 3. @topic @stages:discussion @depends:topicb @id:topicc Billing\n\n## 3.1 @stage:discussion Discussion\n`,
+        )
+        await openOverview('1.2.1')
+        assert.equal(await overview().locator('[data-band="implementation"] .overview-count').textContent(), '8 nodes: show them')
+        assert.equal(await overview().locator('[data-band="implementation"] [data-trace-num]').count(), 0)
+        await overview().locator('[data-band="implementation"] .overview-count').click()
+        assert.equal(await overview().locator('[data-band="implementation"] [data-trace-num]').count(), 8)
+        await overview().locator('.overview-close').click()
+        await openOverview('2')
+        assert.deepEqual(await overview().locator('[data-band]').evaluateAll(els => els.map(el => [el.dataset.band, [...el.querySelectorAll('[data-trace-num]')].map(b => b.dataset.traceNum)])), [
+            ['waits-for', ['1']],
+            ['self', ['2']],
+            ['waited-by', ['3']],
+        ])
+    })
+
+    test('on a narrow window the overview covers the outline, and a swipe right or the back arrow closes it', async () => {
+        await show('narrow', PLAN_ITEMS, { width: 480, height: 800 })
+        await openOverview('1.2.1')
+        assert.equal(await overview().evaluate(el => Math.round(el.getBoundingClientRect().width)), 480)
+        await overview().locator('.overview-back').click()
+        await until(async () => (await overview().count()) === 0, { what: 'the back arrow to close it' })
+        await openOverview('1.2.1')
+        await overview().evaluate(el => {
+            const touch = x => new Touch({ identifier: 1, target: el, clientX: x, clientY: 300 })
+            el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [touch(40)], changedTouches: [touch(40)] }))
+            el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [], changedTouches: [touch(200)] }))
+        })
+        await until(async () => (await overview().count()) === 0, { what: 'the swipe to close it' })
+    })
 })
