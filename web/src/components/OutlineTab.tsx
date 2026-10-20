@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, outlineApiPath } from '@/lib/api'
-import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
+import { UNTITLED, allNodes, currentPath, isStarting, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
 import { topicTraceOf, traceOf } from '@/lib/trace'
 import { cn } from '@/lib/utils'
 import type { Lifecycle, Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
 import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
+import { agentOf } from './ModelPicker'
 import { NodeHistory } from './NodeHistory'
 import { Overview } from './Overview'
 import { useNotify } from './Notice'
@@ -80,12 +81,8 @@ interface Props {
     onViewer?: (patch: StatePatch) => void
 }
 
-/**
- * What an outline without nodes says. One the server opened for a session it has just started links to no session
- * until that session's agent attaches to it.
- */
+/** What an outline without nodes says. One that is starting (`isStarting`) says so under it. */
 const EMPTY = {
-    starting: 'This outline is empty, and its agent is starting. Write below to begin. If nothing answers, look at the Terminal view: the agent may be asking something there.',
     linked: 'This outline is empty. Write to the agent below to begin.',
     unlinked: 'This outline is empty.',
 }
@@ -265,7 +262,14 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
                 {outline.intro && <div className="outline-intro" dangerouslySetInnerHTML={{ __html: outline.intro }} />}
                 {!outline.intro && !outline.nodes.length && (
                     <p data-empty role="status" className={cn(outline.untitled ? 'mt-3' : 'mt-10', 'text-center text-sm text-muted-foreground')}>
-                        {EMPTY[!actions.linked ? 'unlinked' : outline.mode === 'server' && !outline.session ? 'starting' : 'linked']}
+                        {EMPTY[actions.linked ? 'linked' : 'unlinked']}
+                        {isStarting(outline, actions.linked) && (
+                            // The page starts Claude sessions only, and nothing names the model before the agent attaches.
+                            <span data-initializing className="mt-1 block" title="If this does not end, look at the Terminal view: the agent may be asking something there.">
+                                {agentOf('', outline.model) || 'Claude'} is initializing the outline plugin
+                                <Ellipsis />
+                            </span>
+                        )}
                     </p>
                 )}
                 {hasTopics(shown) ? (
@@ -283,4 +287,15 @@ function withGone(columns: KindKey[], pulse: Map<string, MarksChange>): KindKey[
     const gone = new Set<KindKey>()
     for (const c of pulse.values()) for (const key of Object.keys(c.gone) as KindKey[]) gone.add(key)
     return gone.size ? KIND_COLUMNS.filter(k => columns.includes(k) || gone.has(k)) : columns
+}
+
+/** Three dots that light up one after another: something is still going on. */
+function Ellipsis() {
+    return (
+        <span className="ellipsis" aria-hidden="true">
+            <span>.</span>
+            <span>.</span>
+            <span>.</span>
+        </span>
+    )
 }

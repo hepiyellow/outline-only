@@ -23,7 +23,7 @@ function fromLine(line: string) {
  * The agent a model belongs to, for the label before the pickers: told from the model id the transcript names, or the
  * name the outline's `Model:` line gives ("Claude Sonnet 5.5"). Empty when it is not known, so nothing is guessed.
  */
-function agentOf(model: string, line: string) {
+export function agentOf(model: string, line: string) {
     const name = `${model} ${line}`.toLowerCase()
     if (/\bclaude\b|claude-/.test(name)) return 'Claude'
     if (/\bcodex\b|\bgpt-|\bgpt\b/.test(name)) return 'Codex'

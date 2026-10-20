@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { CornerDownLeft, Square, Trash2, X } from 'lucide-react'
+import { CornerDownLeft, LoaderCircle, Square, Trash2, X } from 'lucide-react'
 import { Command, CommandItem, CommandList } from '@/components/ui/command'
 import { sendToSession, stopSession } from '@/lib/send'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,8 @@ interface Props {
     viewer: ViewerState
     patch: (p: StatePatch) => Promise<void>
     busy: boolean
+    /** The session was just started and its agent is loading the outline plugin (`isStarting`): working, though in no turn yet. */
+    starting: boolean
     /** The model and effort the agent last answered with, for the pickers. */
     using?: Using
     /** The agent's messages, for the inbox button under the box. */
@@ -40,10 +42,11 @@ const chipNum = (c: Chip) => /^(\d+(?:\.\d+)*)\.?\s/.exec(c.label)?.[1]
  * icon, sent as `Removed from the outline: …`, and the box then asks why. Its draft and chips live in the viewer state, so
  * every window on the outline shares them. `/` at the start lists the session's commands.
  *
- * At the end of the box, the Enter key in a circle sends. While the agent works, a dot blinks at its corner, and with
- * nothing typed it stops the agent instead of sending; typing a new message makes it send again, the dot still blinking.
+ * At the end of the box, the Enter key in a circle sends. While the agent works, a spinner turns beside the inbox under
+ * the box, and with nothing typed the button stops the agent instead of sending; typing a new message makes it send
+ * again, the spinner still turning.
  */
-export function InputBox({ outline, viewer, patch, busy, using, messages, onSeen, onSent, onReveal, added, inOutline }: Props) {
+export function InputBox({ outline, viewer, patch, busy, starting, using, messages, onSeen, onSent, onReveal, added, inOutline }: Props) {
     const notify = useNotify()
     const root = useRef<HTMLFormElement>(null)
     const box = useRef<HTMLTextAreaElement>(null)
@@ -186,6 +189,7 @@ export function InputBox({ outline, viewer, patch, busy, using, messages, onSeen
     const removing = chips.some(c => c.kind === 'remove')
     // Nothing to send while the agent works: the button stops it.
     const stops = busy && empty
+    const working = busy || starting
     return (
         <form
             id="composer"
@@ -265,31 +269,28 @@ export function InputBox({ outline, viewer, patch, busy, using, messages, onSeen
                             onKeyDown={onKeyDown}
                         />
                         {/* In the box, at its end: the Enter key in a circle sends; while the agent works and there is nothing to send, it stops the agent. */}
-                        <span className="relative mb-px shrink-0">
-                            <button
+                        <button
                                 type={stops ? 'button' : 'submit'}
                                 data-send-button
                                 title={stops ? 'Stop the agent' : 'Send'}
                                 aria-label={stops ? 'Stop' : 'Send'}
                                 disabled={stops ? stopping : empty || sending}
                                 onClick={stops ? stop : undefined}
-                                className="inline-flex size-[26px] items-center justify-center rounded-full border border-muted-foreground/60 text-muted-foreground hover:border-foreground hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:border-muted-foreground/60 disabled:hover:text-muted-foreground"
+                                className="mb-px inline-flex size-[26px] shrink-0 items-center justify-center rounded-full border border-muted-foreground/60 text-muted-foreground hover:border-foreground hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:border-muted-foreground/60 disabled:hover:text-muted-foreground"
                             >
                                 {stops ? <Square className="size-2.5" fill="currentColor" /> : <CornerDownLeft className="size-3.5" />}
                             </button>
-                            {/* The working indicator: a dot on the button's corner, blinking until the agent's turn ends. */}
-                            <span
-                                role="status"
-                                aria-label={busy ? 'The agent is working' : 'The agent is idle'}
-                                data-busy={busy || undefined}
-                                className={cn('work-dot pointer-events-none absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background bg-foreground', !busy && 'invisible')}
-                            />
-                        </span>
                     </div>
                 </div>
-                {/* Under the box, outside it: the inbox at the start, the session's agent, model and effort at the end, where the box ends. */}
+                {/* Under the box, outside it: the inbox and the working spinner at the start, the session's agent, model and effort at the end, where the box ends. */}
                 <div className="mt-1.5 flex items-center justify-between gap-2 pr-1">
-                    <InboxButton messages={messages} seen={viewer.seen} onSeen={onSeen} onReveal={onReveal} placement="composer" />
+                    <div className="flex items-center gap-2">
+                        <InboxButton messages={messages} seen={viewer.seen} onSeen={onSeen} onReveal={onReveal} placement="composer" />
+                        {/* The working indicator: it spins while the agent loads the outline plugin, and in each turn until the turn ends. */}
+                        <span role="status" aria-label={working ? 'The agent is working' : 'The agent is idle'} data-busy={working || undefined} className={cn('flex text-muted-foreground', !working && 'invisible')}>
+                            <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                        </span>
+                    </div>
                     <ModelPicker outline={outline} using={using} busy={busy} />
                 </div>
             </div>
