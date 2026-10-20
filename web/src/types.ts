@@ -200,7 +200,14 @@ export interface ViewerState {
     tab: TabName
     /** How the change indicators of the queue column are ordered: as the outline is, or the oldest change first. */
     order: 'number' | 'time'
+    /** Server mode: a topic's id → its topic layout, by stage (as kept) or by plan item. A topic not in it is by stage. */
+    layout?: Record<string, TopicLayout>
+    /** Server mode: the stage view, one stage of every topic, or of the one topic with the id `topic`; no stage, the outline as it is. */
+    stageView?: { stage: StageName | ''; topic: string }
 }
+
+/** How the page lays out one topic's nodes: by stage, as they are kept, or by plan item, drawn from the links. */
+export type TopicLayout = 'stage' | 'plan'
 
 /** The page's tabs: Outline, Markdown, Transcript and Terminal. */
 export type TabName = 'outline' | 'md' | 'transcript' | 'term'
@@ -251,7 +258,7 @@ export interface SlashCommand {
 
 /** A change to the viewer state: map sections change single entries (null deletes one), the others are replaced. */
 export type StatePatch = {
-    [K in keyof ViewerState]?: ViewerState[K] extends Record<string, infer V> ? Record<string, V | null> : ViewerState[K]
+    [K in keyof ViewerState]?: K extends 'stageView' ? ViewerState[K] : NonNullable<ViewerState[K]> extends Record<string, infer V> ? Record<string, V | null> : ViewerState[K]
 }
 
 /** An entry of the Transcript tab, from the outline's stream (transcript.js). */

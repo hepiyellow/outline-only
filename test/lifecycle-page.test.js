@@ -235,4 +235,92 @@ describe('the lifecycle on the page', () => {
         assert.equal(await stage('1.2').locator('[data-stage-status]').textContent(), 'Needs review')
         assert.equal(await node('1.2.1').locator('[data-review]').textContent(), 'needs review')
     })
+
+    const PLAN_ITEMS = `# 1. @topic @stages:discussion,plan,implementation,verification @id:topica Search
+
+## 1.1 @stage:discussion Discussion
+
+### 1.1.1 @user-approved @agent-claim @id:aaaaa1 Use Redis
+
+## 1.2 @stage:plan Plan
+
+### 1.2.1 @plan-item @id:aaaaa2 @links:aaaaa1 Size the cluster
+
+### 1.2.2 @plan-item @id:aaaaa3 @links:aaaaa1 Write the client
+
+## 1.3 @stage:implementation Implementation
+
+### 1.3.1 @task-done @id:bbbbb1 @links:aaaaa2 Provision three nodes
+
+### 1.3.2 @task @id:bbbbb2 @links:aaaaa2,aaaaa3 Wire config for both
+
+@Task. Wires it.
+
+### 1.3.3 @task Tidy up
+
+@Task. Tidies.
+
+## 1.4 @stage:verification Verification
+
+### 1.4.1 @task @links:bbbbb2 Run the integration tests
+
+@Task. Runs them.
+
+# 2. @topic @stages:discussion,implementation @id:topicb Rollout
+
+## 2.1 @stage:discussion Discussion
+
+### 2.1.1 @agent-claim Region by region
+
+## 2.3 @stage:implementation Implementation
+
+### 2.3.1 @task Deploy
+
+@Task. Deploys it.
+`
+
+    test('a topic is laid out by plan item: each with the tasks that carry it out and their checks, a shared task under each; same numbers', async () => {
+        await show('layout', PLAN_ITEMS)
+        // By stage, as kept.
+        assert.equal(await page.locator('[data-carried]').count(), 0)
+        await page.locator('[data-topic="1"] [data-layout="plan"]').click()
+        await until(() => page.locator('[data-plan-item="1.2.1"] [data-carried]').count(), { what: 'the layout by plan item' })
+        const carried = item => page.locator(`[data-plan-item="${item}"] > .lc-carried > [data-carried]`).evaluateAll(els => els.map(el => [el.dataset.carried, el.dataset.shared ?? '']))
+        assert.deepEqual(await carried('1.2.1'), [['1.3.1', ''], ['1.3.2', 'true']])
+        assert.deepEqual(await carried('1.2.2'), [['1.3.2', 'true']])
+        assert.equal(await page.locator('[data-carried="1.3.2"] .lc-checks [data-num="1.4.1"]').count(), 2)
+        // What no plan item showed stays in its stage.
+        assert.deepEqual(await stage('1.3').locator('> .kids [data-num]').evaluateAll(els => els.map(el => el.dataset.num)), ['1.3.3'])
+        assert.equal(await stage('1.4').locator('.stage-empty').textContent(), 'Shown under their plan items.')
+        // The other topic, without a Plan, has no layout switch.
+        assert.equal(await page.locator('[data-topic="2"] .lc-layout').count(), 0)
+        // The choice is the viewer's, kept by the server.
+        const state = await (await fetch(`${server.url}/api/state/demo/layout`, { headers: { origin: server.url } })).json()
+        assert.deepEqual(state.layout, { topica: 'plan' })
+        await page.reload()
+        await until(() => page.locator('[data-plan-item="1.2.1"] [data-carried]').count(), { what: 'the layout after a reload' })
+        await page.locator('[data-topic="1"] [data-layout="stage"]').click()
+        await until(async () => (await page.locator('[data-carried]').count()) === 0, { what: 'the layout by stage' })
+    })
+
+    test('the stage view shows one stage of every topic, each labeled with its topic, with a filter by topic', async () => {
+        await show('stageview', PLAN_ITEMS)
+        await page.locator('[data-stage-view="implementation"]').click()
+        await until(() => page.locator('.lc-stage-view').count(), { what: 'the stage view' })
+        assert.deepEqual(await page.locator('.lc-stage-of').evaluateAll(els => els.map(el => [el.dataset.topicLabel, el.querySelector('.lc-topic-label').textContent])), [
+            ['1', '1. Search'],
+            ['2', '2. Rollout'],
+        ])
+        assert.deepEqual(await page.locator('.lc-stage-view .lc-stage > .stage-head').evaluateAll(els => els.map(el => el.dataset.num)), ['1.3', '2.3'])
+        assert.equal(await node('1.1.1').count(), 0)
+        await page.locator('[data-stage-topic]').selectOption('topicb')
+        await until(async () => (await page.locator('.lc-stage-of').count()) === 1, { what: 'the filter by topic' })
+        assert.ok(await node('2.3.1').isVisible())
+        await page.locator('[data-stage-view="discussion"]').click()
+        await until(() => node('2.1.1').isVisible(), { what: 'the other stage of the same topic' })
+        const state = await (await fetch(`${server.url}/api/state/demo/stageview`, { headers: { origin: server.url } })).json()
+        assert.deepEqual(state.stageView, { stage: 'discussion', topic: 'topicb' })
+        await page.locator('[data-stage-view=""]').click()
+        await until(() => page.locator('.lc-topic').count().then(n => n === 2), { what: 'the outline as it is' })
+    })
 })

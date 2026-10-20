@@ -3,7 +3,7 @@ import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
 import { cn } from '@/lib/utils'
-import type { Outline, OutlineNode, StageInfo, StageName, ViewerState } from '@/types'
+import type { Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
 import { api, outlineApiPath } from '@/lib/api'
 import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
 import { NodeHistory } from './NodeHistory'
@@ -71,6 +71,8 @@ interface Props {
     viewer: ViewerState
     actions: NodeActions
     onToggle: (node: OutlineNode, open: boolean) => void
+    /** Changes the viewer state: the topic layouts and the stage view. */
+    onViewer?: (patch: StatePatch) => void
 }
 
 /**
@@ -83,7 +85,7 @@ const EMPTY = {
     unlinked: 'This outline is empty.',
 }
 
-export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props) {
+export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer = () => {} }: Props) {
     const root = useRef<HTMLDivElement>(null)
     const [historyOf, setHistoryOf] = useState<OutlineNode | null>(null)
     // The changes that wait, in the diff view or not: their marks turn when they are accepted.
@@ -107,6 +109,9 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
             ...actions,
             ...act,
             lifecycle,
+            layoutOf: (topic: OutlineNode) => viewer.layout?.[topic.id ?? topic.num] ?? 'stage',
+            onLayout: (topic: OutlineNode, layout: TopicLayout) => onViewer({ layout: { [topic.id ?? topic.num]: layout === 'stage' ? null : layout } }),
+            nodeByNum: new Map(allNodes(shown).map(n => [n.num, n])),
             onHistory: setHistoryOf,
             statuses,
             // The first item about a node, as the queue column lists them.
@@ -124,7 +129,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
             runs: viewer.runs,
             links: linksByNum(outline.nodes),
         }
-    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, actions, unopened, pulse, onToggle, act, lifecycle])
+    }, [outline, shown, viewer.open, viewer.overrides, viewer.runs, viewer.seen, viewer.layout, actions, unopened, pulse, onToggle, onViewer, act, lifecycle])
 
     // Accepting a change turns the marks it held back: each one that differs from before grows and shrinks once. What
     // it was is the outline as it was shown with the change not accepted, so only the click makes a difference.
@@ -239,7 +244,7 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
                     </p>
                 )}
                 {hasTopics(shown) ? (
-                    <LifecycleView nodes={shown} removed={actions.removedIn('')} />
+                    <LifecycleView nodes={shown} removed={actions.removedIn('')} stageView={viewer.stageView} onStageView={stageView => onViewer({ stageView })} />
                 ) : (
                     withRemoved(shown, actions.removedIn('')).map(n => (isRemoved(n) ? <RemovedRow key={`removed:${n.id}`} node={n} topic /> : <Topic key={n.num} node={n} />))
                 )}

@@ -6,7 +6,7 @@ import type { Statuses } from '@/lib/status'
 import { DONE_PILL, FAILED_PILL, contentHtml, liveHtml, type NodeContent } from '@/lib/content'
 import { allNodes, type NodeLinks } from '@/lib/outline'
 import type { Box, KindKey, MarksChange } from '@/lib/status'
-import type { Lifecycle, Message, OutlineNode, QueueItem, RemovedNode, StageName } from '@/types'
+import type { Lifecycle, Message, OutlineNode, QueueItem, RemovedNode, StageName, TopicLayout } from '@/types'
 import { NodeMessages } from './Inbox'
 import { useNotify } from './Notice'
 import type { PendingChange } from '@/lib/pending'
@@ -84,6 +84,11 @@ export interface OutlineContext {
     onStage: (topic: string, name: StageName, on: boolean) => void
     /** The user reopens a Discussion or a Plan the agent closed. */
     onReopen: (stage: string) => void
+    /** A topic's layout, as the viewer chose it: by stage unless they chose by plan item. */
+    layoutOf: (topic: OutlineNode) => TopicLayout
+    onLayout: (topic: OutlineNode, layout: TopicLayout) => void
+    /** The outline's nodes as shown, by number. */
+    nodeByNum: Map<string, OutlineNode>
 }
 
 export const OutlineCtx = createContext<OutlineContext | null>(null)

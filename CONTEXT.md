@@ -252,7 +252,7 @@ The tab that shows the linked session's transcript as rendered messages.
 _Avoid_: Chat tab, chat view
 
 **Viewer state**:
-What the page remembers for the user about one outline (open nodes, what was read, undo steps, seen messages, the input box's draft, the tab shown, the order of the change indicators, and in file mode the approvals still pending), kept by the server so every window on the outline shows the same.
+What the page remembers for the user about one outline (open nodes, what was read, undo steps, seen messages, the input box's draft, the tab shown, the order of the change indicators, each topic's topic layout and the stage view, and in file mode the approvals still pending), kept by the server so every window on the outline shows the same.
 _Avoid_: Local storage, preferences, settings (that is the settings file)
 
 **Input box**:

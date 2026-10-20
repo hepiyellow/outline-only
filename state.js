@@ -23,8 +23,13 @@ export const STATE_DIR = '.state'
  * - chips: the references waiting in the input box, `{ label, ref }`; a node to remove also has `kind: 'remove'`
  * - tab: the tab shown (outline, md, transcript or term)
  * - order: how the change indicators of the queue column are ordered: by `number` (the outline's order) or by `time`
+ * - layout: a topic's id → how the page lays the topic out, `stage` or `plan` (by plan item); a topic not in it is by stage
+ * - stageView: the stage view, `{ stage, topic }`: one stage of every topic (or of the topic with that id), or with no
+ *   stage the outline as it is
+ * The last two are only there once the viewer chose one: an outline without topics never has them.
  */
-const MAPS = ['open', 'overrides', 'sent', 'backTo', 'read', 'runs', 'seen']
+const MAPS = ['open', 'overrides', 'sent', 'backTo', 'read', 'runs', 'seen', 'layout']
+const STAGES = ['discussion', 'plan', 'implementation', 'verification', 'preservation']
 const isChip = c => c && typeof c.label === 'string' && typeof c.ref === 'string' && c.label.length <= 500 && c.ref.length <= 2000 && (c.kind === undefined || c.kind === 'remove')
 const OTHERS = {
     undo: Array.isArray,
@@ -32,6 +37,7 @@ const OTHERS = {
     chips: v => Array.isArray(v) && v.length <= 50 && v.every(isChip),
     tab: v => ['outline', 'md', 'transcript', 'term'].includes(v),
     order: v => v === 'number' || v === 'time',
+    stageView: v => !!v && typeof v === 'object' && (v.stage === '' || STAGES.includes(v.stage)) && typeof v.topic === 'string' && v.topic.length <= 200,
 }
 export const SECTIONS = [...MAPS, ...Object.keys(OTHERS)]
 
@@ -107,6 +113,7 @@ function validate(change) {
         for (const [key, v] of Object.entries(value)) {
             if (!KEY.test(key)) throw new Error(`bad key ${key}`)
             if (v !== null && !['boolean', 'number', 'string'].includes(typeof v)) throw new Error(`bad value for ${section}.${key}`)
+            if (section === 'layout' && v !== null && v !== 'stage' && v !== 'plan') throw new Error(`bad value for ${section}.${key}`)
             if (typeof v === 'string' && v.length > (section === 'read' ? MAX_READ : 200)) throw new Error(`value too long for ${section}.${key}`)
         }
     }

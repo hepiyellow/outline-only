@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { describe, test } from 'node:test'
 import { OpError, allNodes, applyOperations, applyUserSet, findNode, lifecycleOf, mapText, nodeHash, normalize, parseOutline, readText, serializeOutline, softFlags } from '../model.js'
 import { countCheckboxProgress, outlinePayload } from '../outline.js'
+import { createStateStore } from '../state.js'
 import { FIXTURES, ROOT, inServerMode } from './helpers.js'
 
 // The lifecycle of an outline (docs/plans/lifecycle.md, ADR 0005), as the model keeps it: links, levels, topics and
@@ -573,5 +575,23 @@ describe('ripples and soft flags', () => {
         assert.deepEqual(softFlags(model).get('1.3.2'), ['no-plan-item'])
         // An outline without topics has none.
         assert.equal(softFlags(outline(PLAIN)).size, 0)
+    })
+})
+
+describe('topic layouts and the stage view are viewer state', () => {
+    test('the state keeps a layout per topic id and the stage view, once chosen, and refuses anything else', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'outline-only-layout-'))
+        try {
+            const store = createStateStore(root)
+            assert.equal('layout' in store.read('demo', 'x'), false)
+            store.patch('demo', 'x', { layout: { abc123: 'plan', def456: 'plan' }, stageView: { stage: 'plan', topic: 'abc123' } })
+            store.patch('demo', 'x', { layout: { def456: null } })
+            assert.deepEqual(store.read('demo', 'x').layout, { abc123: 'plan' })
+            assert.deepEqual(store.read('demo', 'x').stageView, { stage: 'plan', topic: 'abc123' })
+            assert.throws(() => store.patch('demo', 'x', { layout: { abc123: 'nested' } }), /bad value for layout/)
+            assert.throws(() => store.patch('demo', 'x', { stageView: { stage: 'review', topic: '' } }), /bad stageView/)
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true })
+        }
     })
 })

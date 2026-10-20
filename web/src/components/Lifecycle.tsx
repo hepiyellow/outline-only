@@ -1,7 +1,8 @@
 import { type KeyboardEvent, type MouseEvent } from 'react'
 import { ChevronDown, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { OutlineNode, RemovedNode, SoftFlag, StageInfo, StageName } from '@/types'
+import { allNodes } from '@/lib/outline'
+import type { OutlineNode, RemovedNode, SoftFlag, StageInfo, StageName, TopicLayout, ViewerState } from '@/types'
 import { Asks, Diff, DiffBar, Html, Messages, NodeList, RemovedRow, RowMarks, isRemoved, useOutlineCtx, withRemoved } from './NodeView'
 
 // The lifecycle on the page (server mode, docs/adr/0005): an outline with topics shows each topic with its stages, and
@@ -166,6 +167,7 @@ export function TopicSection({ node }: { node: OutlineNode }) {
                 </span>
                 <WaitsFor topic={node} />
                 <StageSwitches topic={node} />
+                <LayoutSwitch topic={node} />
                 <Messages node={node} />
                 <Asks node={node} />
             </div>
@@ -231,9 +233,90 @@ export function StageSection({ node }: { node: OutlineNode }) {
                 <RowMarks node={node} box={statuses.box(node)} />
             </div>
             <div className="kids" hidden={!open}>
-                {node.children.length ? <NodeList nodes={node.children} under={node.num} /> : <p className="stage-empty">{status === 'off' ? 'Turned off.' : 'Nothing here yet.'}</p>}
+                <StageNodes stage={node} empty={status === 'off' ? 'Turned off.' : 'Nothing here yet.'} />
             </div>
         </section>
+    )
+}
+
+/**
+ * The nodes of a stage, as its topic's layout lays them out. By stage they are as kept. By plan item, the Plan holds
+ * each plan item with the tasks that carry it out under it, and the checks of each task under that; a task that
+ * carries out two plan items stands under each, marked shared. The doing stages then hold what no plan item showed.
+ */
+function StageNodes({ stage, empty }: { stage: OutlineNode; empty: string }) {
+    const { layoutOf, nodeByNum, links } = useOutlineCtx()
+    const topic = nodeByNum.get(stage.num.split('.').slice(0, -1).join('.'))
+    const byPlanItem = !!topic && layoutOf(topic) === 'plan'
+    if (!byPlanItem || !topic) return stage.children.length ? <NodeList nodes={stage.children} under={stage.num} /> : <p className="stage-empty">{empty}</p>
+    const inStage = (name: StageName) => (num: string) => num.startsWith(`${topic.num}.${STAGES.indexOf(name) + 1}.`)
+    const tasksOf = (item: OutlineNode) => (links.get(item.num)?.usedBy ?? []).filter(inStage('implementation')).map(n => nodeByNum.get(n)).filter((n): n is OutlineNode => !!n)
+    const checksOf = (task: OutlineNode) => (links.get(task.num)?.usedBy ?? []).filter(inStage('verification')).map(n => nodeByNum.get(n)).filter((n): n is OutlineNode => !!n)
+    const items = allNodes(topic.children.find(c => c.stage === 'plan')?.children ?? []).filter(n => n.tags.includes('plan-item'))
+    if (stage.stage === 'plan')
+        return stage.children.length ? (
+            <div className="lc-by-plan">
+                {stage.children.map(item =>
+                    item.tags.includes('plan-item') ? (
+                        <div key={item.num} className="lc-plan-item" data-plan-item={item.num}>
+                            <NodeList nodes={[item]} under={`plan:${item.num}`} />
+                            {tasksOf(item).length > 0 && (
+                                <div className="lc-carried">
+                                    {tasksOf(item).map(task => {
+                                        const shared = (links.get(task.num)?.from ?? []).filter(num => items.some(i => i.num === num)).length > 1
+                                        return (
+                                            <div key={task.num} className="lc-task" data-carried={task.num} data-shared={shared || undefined}>
+                                                {shared && <span className="lc-badge shared">shared</span>}
+                                                <NodeList nodes={[task]} under={`plan:${item.num}:${task.num}`} />
+                                                {checksOf(task).length > 0 && (
+                                                    <div className="lc-checks">
+                                                        <NodeList nodes={checksOf(task)} under={`plan:${task.num}`} />
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <NodeList key={item.num} nodes={[item]} under={`plan:${item.num}`} />
+                    ),
+                )}
+            </div>
+        ) : (
+            <p className="stage-empty">{empty}</p>
+        )
+    // A doing stage holds what no plan item showed above.
+    const shown = new Set(items.flatMap(item => tasksOf(item).flatMap(task => [task.num, ...(stage.stage === 'verification' ? checksOf(task).map(c => c.num) : [])])))
+    const rest = stage.children.filter(n => !shown.has(n.num))
+    if (rest.length) return <NodeList nodes={rest} under={stage.num} />
+    return <p className="stage-empty">{stage.children.length ? 'Shown under their plan items.' : empty}</p>
+}
+
+/** A topic's layout switch: by stage, as its nodes are kept, or by plan item. Only for a topic with a Plan. */
+export function LayoutSwitch({ topic }: { topic: OutlineNode }) {
+    const { layoutOf, onLayout } = useOutlineCtx()
+    if (!topic.children.some(c => c.stage === 'plan')) return null
+    const layout = layoutOf(topic)
+    return (
+        <span className="lc-layout" role="group" aria-label={`Layout of ${topic.num}`}>
+            {(['stage', 'plan'] as TopicLayout[]).map(l => (
+                <button
+                    key={l}
+                    type="button"
+                    data-layout={l}
+                    aria-pressed={layout === l}
+                    title={l === 'stage' ? 'By stage: each stage with its nodes, as they are kept' : 'By plan item: each plan item with the tasks that carry it out, and their checks'}
+                    onClick={e => {
+                        e.stopPropagation()
+                        onLayout(topic, l)
+                    }}
+                >
+                    {l === 'stage' ? 'By stage' : 'By plan item'}
+                </button>
+            ))}
+        </span>
     )
 }
 
@@ -241,7 +324,65 @@ export function StageSection({ node }: { node: OutlineNode }) {
  * An outline with topics. While it has one topic, the topic has no heading: its stage switches stand at the top, and
  * its stages under them, as the outline's top level. With more, each topic is drawn with its heading.
  */
-export function LifecycleView({ nodes, removed }: { nodes: OutlineNode[]; removed: RemovedNode[] }) {
+export function LifecycleView({ nodes, removed, stageView, onStageView }: { nodes: OutlineNode[]; removed: RemovedNode[]; stageView: ViewerState['stageView']; onStageView: (view: NonNullable<ViewerState['stageView']>) => void }) {
+    const view = stageView ?? { stage: '', topic: '' }
+    return (
+        <>
+            <StageViewBar nodes={nodes} view={view} onStageView={onStageView} />
+            {view.stage ? <StageView nodes={nodes} stage={view.stage} topic={view.topic} /> : <Topics nodes={nodes} removed={removed} />}
+        </>
+    )
+}
+
+/** The stage view's bar: the outline as it is, or one stage of every topic, with a filter by topic. */
+function StageViewBar({ nodes, view, onStageView }: { nodes: OutlineNode[]; view: NonNullable<ViewerState['stageView']>; onStageView: (view: NonNullable<ViewerState['stageView']>) => void }) {
+    const topics = allNodes(nodes).filter(n => n.tags.includes('topic'))
+    return (
+        <div className="lc-view" role="group" aria-label="Stage view">
+            <span className="lc-bar-label">View</span>
+            <button type="button" data-stage-view="" aria-pressed={!view.stage} onClick={() => onStageView({ stage: '', topic: view.topic })}>
+                Outline
+            </button>
+            {STAGES.map(name => (
+                <button key={name} type="button" data-stage-view={name} aria-pressed={view.stage === name} title={`${STAGE_TITLE[name]} of every topic`} onClick={() => onStageView({ stage: name, topic: view.topic })}>
+                    {STAGE_TITLE[name]}
+                </button>
+            ))}
+            {view.stage && topics.length > 1 && (
+                <select aria-label="Topic" data-stage-topic value={view.topic} onChange={e => onStageView({ stage: view.stage, topic: e.target.value })}>
+                    <option value="">Every topic</option>
+                    {topics.map(t => (
+                        <option key={t.num} value={t.id ?? t.num}>
+                            {t.num}. {t.title}
+                        </option>
+                    ))}
+                </select>
+            )}
+        </div>
+    )
+}
+
+/** One stage of every topic (or of the one picked), each labeled with its topic. */
+function StageView({ nodes, stage, topic }: { nodes: OutlineNode[]; stage: StageName; topic: string }) {
+    const topics = allNodes(nodes).filter(n => n.tags.includes('topic') && (!topic || (n.id ?? n.num) === topic))
+    const shown = topics.map(t => ({ t, s: t.children.find(c => c.stage === stage) })).filter(x => !!x.s)
+    if (!shown.length) return <p className="stage-empty">No topic has {STAGE_TITLE[stage]}.</p>
+    return (
+        <div className="lc-stage-view" data-stage-view-of={stage}>
+            {shown.map(({ t, s }) => (
+                <div key={t.num} className="lc-stage-of" data-topic-label={t.num}>
+                    <div className="lc-topic-label">
+                        {t.num}. <span dangerouslySetInnerHTML={{ __html: t.titleHtml }} />
+                    </div>
+                    <StageSection node={s!} />
+                </div>
+            ))}
+        </div>
+    )
+}
+
+/** The topics, as kept. */
+function Topics({ nodes, removed }: { nodes: OutlineNode[]; removed: RemovedNode[] }) {
     const rows = withRemoved(nodes, removed)
     const topics = nodes.filter(n => n.tags.includes('topic'))
     if (topics.length === 1 && !removed.length) {
@@ -254,6 +395,7 @@ export function LifecycleView({ nodes, removed }: { nodes: OutlineNode[]; remove
                 <div className="lc-bar">
                     <span className="lc-bar-label">Stages</span>
                     <StageSwitches topic={topic} />
+                    <LayoutSwitch topic={topic} />
                 </div>
                 {topic.html && <Html className="topic-text node-html" html={topic.html} />}
                 {shown}
