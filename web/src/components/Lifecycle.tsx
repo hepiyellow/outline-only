@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type MouseEvent } from 'react'
 import { ChevronDown, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { OutlineNode, RemovedNode, StageInfo, StageName } from '@/types'
+import type { OutlineNode, RemovedNode, SoftFlag, StageInfo, StageName } from '@/types'
 import { Asks, Diff, DiffBar, Html, Messages, NodeList, RemovedRow, RowMarks, isRemoved, useOutlineCtx, withRemoved } from './NodeView'
 
 // The lifecycle on the page (server mode, docs/adr/0005): an outline with topics shows each topic with its stages, and
@@ -12,7 +12,40 @@ export const STAGES: StageName[] = ['discussion', 'plan', 'implementation', 'ver
 export const STAGE_TITLE: Record<StageName, string> = { discussion: 'Discussion', plan: 'Plan', implementation: 'Implementation', verification: 'Verification', preservation: 'Preservation' }
 
 /** What a stage's status reads as, in a word. */
-const STATUS_TEXT: Record<StageInfo['status'], string> = { off: 'Off', 'not-started': 'Not started', active: 'Active', done: 'Done' }
+const STATUS_TEXT: Record<StageInfo['status'], string> = { off: 'Off', 'not-started': 'Not started', active: 'Active', done: 'Done', 'needs-review': 'Needs review' }
+
+/** Each soft flag: a word or two for its badge, and what it says in full. */
+const FLAGS: Record<SoftFlag, [string, string]> = {
+    unplanned: ['not planned', 'Nothing in an active Plan comes from this decision'],
+    'no-decision': ['no decision', 'This plan item comes from no decision'],
+    'unapproved-claim': ['unapproved claim', 'This plan item is built on a claim you have not approved'],
+    'no-plan-item': ['no plan item', 'This task carries out no plan item'],
+    unchecked: ['no check', 'No check covers this task'],
+}
+
+/**
+ * What the lifecycle says of a node, as badges after its title: that a change upstream reached it and it needs
+ * review, and its soft flags. None of them asks anything of the user.
+ */
+export function LifecycleBadges({ num }: { num: string }) {
+    const { lifecycle } = useOutlineCtx()
+    const own = lifecycle.nodes?.[num]
+    if (!own) return null
+    return (
+        <>
+            {own.review && (
+                <span className="lc-badge review" data-review title="A change upstream reached this node: the agent looks at it again">
+                    needs review
+                </span>
+            )}
+            {own.flags?.map(f => (
+                <span key={f} className="lc-badge flag" data-flag={f} title={FLAGS[f][1]}>
+                    {FLAGS[f][0]}
+                </span>
+            ))}
+        </>
+    )
+}
 
 /** Whether the outline has its topics written: the page then draws topics and stages. */
 export const hasTopics = (nodes: OutlineNode[]) => nodes.some(n => n.tags.includes('topic'))
@@ -22,6 +55,7 @@ export const hasTopics = (nodes: OutlineNode[]) => nodes.some(n => n.tags.includ
  * every other stage and every topic open. Undefined for any other node.
  */
 export function lifecycleStartsOpen(node: OutlineNode, stages: Record<string, StageInfo>): boolean | undefined {
+    // A stage a ripple reached opens: it holds what needs review.
     if (node.stage) return !['done', 'off'].includes(stages[node.num]?.status ?? '')
     if (node.tags.includes('topic')) return true
     return undefined

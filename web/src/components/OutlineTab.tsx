@@ -182,6 +182,18 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle }: Props)
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [shown, ctx.statuses])
 
+    // A ripple that reaches a collapsed stage opens it, also one the viewer had closed: it holds what needs review.
+    const reviewing = useRef<Set<string> | null>(null)
+    useEffect(() => {
+        const now = new Set(Object.entries(lifecycle.stages).filter(([, s]) => s.status === 'needs-review').map(([num]) => num))
+        const before = reviewing.current
+        reviewing.current = now
+        if (!before) return
+        for (const n of allNodes(shown)) if (now.has(n.num) && !before.has(n.num) && !ctx.isOpen(n)) onToggle(n, true)
+        // Only a change of which stages need review matters.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lifecycle])
+
     // The header stack follows scrolling, resizing, and every change of the content.
     useLayoutEffect(() => {
         const el = root.current

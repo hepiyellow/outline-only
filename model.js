@@ -49,7 +49,7 @@ export function headingLevel(hashes, num) {
 }
 
 function blankNode(level) {
-    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], topic: false, stages: [], depends: [], stage: '', stageDone: false, planItem: false, text: '', summary: '', recommendation: '', taskLine: '', children: [] }
+    return { num: '', level, title: '', approved: false, claim: false, asks: false, question: false, option: '', recommended: false, current: false, task: '', id: '', links: [], topic: false, stages: [], depends: [], stage: '', stageDone: false, planItem: false, review: false, text: '', summary: '', recommendation: '', taskLine: '', children: [] }
 }
 
 /** A heading line's number, tags and title, as a node without text. */
@@ -70,6 +70,7 @@ function headingNode(content, level) {
         else if (name === 'topic') node.topic = true
         else if (name === 'stage-done') node.stageDone = true
         else if (name === 'plan-item') node.planItem = true
+        else if (name === 'needs-review') node.review = true
         else if (letter) node.option = letter[1].toUpperCase()
         else if (name === 'user-approved' || name === 'approved') node.approved = true
         else if (name === 'agent-claim' || name === 'claim') node.claim = true
@@ -172,6 +173,7 @@ function headingLine(node) {
         node.stage && `@stage:${node.stage}`,
         node.stageDone && '@stage-done',
         node.planItem && '@plan-item',
+        node.review && '@needs-review',
         node.id && `@id:${node.id}`,
         node.links.length && `@links:${node.links.join(',')}`,
     ].filter(Boolean)
@@ -371,16 +373,19 @@ function fitStages(topic) {
 /**
  * Where a stage of a topic stands: `off` (turned off, its nodes kept), `not-started` (on, and it holds no node yet),
  * `active`, or `done`. Implementation, Verification and Preservation are done once every task in them is, with their
- * progress (`done` of `total` tasks); Discussion and Plan once the agent said so.
+ * progress (`done` of `total` tasks); Discussion and Plan once the agent said so. A stage that holds a node a ripple
+ * reached `needs-review`, whatever else it is.
  */
 export function stageStatus(topic, stage) {
     if (!topic.stages.includes(stage.stage)) return { status: 'off' }
     const held = inStage(stage)
     if (!stage.children.length) return { status: 'not-started' }
-    if (!DOING.includes(stage.stage)) return { status: stage.stageDone ? 'done' : 'active' }
+    // A node a ripple reached: the stage needs review, whatever else it is.
+    const review = held.some(n => n.review)
+    if (!DOING.includes(stage.stage)) return { status: review ? 'needs-review' : stage.stageDone ? 'done' : 'active' }
     const tasks = held.filter(n => n.task)
     const done = tasks.filter(n => n.task === 'done').length
-    return { status: tasks.length && done === tasks.length ? 'done' : 'active', progress: { done, total: tasks.length } }
+    return { status: review ? 'needs-review' : tasks.length && done === tasks.length ? 'done' : 'active', progress: { done, total: tasks.length } }
 }
 
 /** The topic a node sits in: the nearest above it (a topic's heading sits in its own). */
@@ -411,6 +416,83 @@ export function dependenciesOf(model) {
     return new Map([...out].map(([num, on]) => [num, [...on].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))]))
 }
 
+/**
+ * A ripple: marks every node that comes from the nodes given, through link after link, as needing review, and returns
+ * the nodes it marked, upstream first (nearest first, then in outline order). The nodes given are not marked: they are
+ * what changed. A node marked gets an id, so that the turn-end hook can tell it apart through renumbering.
+ */
+export function ripple(model, from) {
+    const order = new Map(allNodes(model.nodes).map((n, i) => [n, i]))
+    const reached = new Set(from)
+    const marked = []
+    for (let front = [...from]; front.length; ) {
+        const next = []
+        for (const n of front) for (const m of linkedTo(model, n)) if (!reached.has(m)) reached.add(m) && next.push(m)
+        next.sort((a, b) => order.get(a) - order.get(b))
+        for (const m of next) {
+            if (!m.review) marked.push(m)
+            m.review = true
+            idOf(model, m)
+        }
+        front = next
+    }
+    return marked
+}
+
+/** What each soft flag says, in a few words. */
+export const FLAG_TEXT = {
+    unplanned: 'nothing in an active Plan comes from this decision',
+    'no-decision': 'this plan item comes from no decision',
+    'unapproved-claim': 'built on a claim the user has not approved',
+    'no-plan-item': 'this task carries out no plan item',
+    unchecked: 'no check covers this task',
+}
+
+/**
+ * The soft flags of an outline with topics, by node number: what the lifecycle expects and does not find. They are
+ * never refused, and ask the user nothing:
+ * - `unplanned`: a decision nothing in an active Plan comes from, when its topic's Plan is active
+ * - `no-decision`: a plan item that comes from no decision, while its topic's Discussion is on
+ * - `unapproved-claim`: a plan item built on a claim the user has not approved
+ * - `no-plan-item`: a task in Implementation that carries out no plan item, while Plan is on
+ * - `unchecked`: a task in Implementation that no check covers, while Verification is on
+ */
+export function softFlags(model) {
+    const out = new Map()
+    if (!hasTopics(model)) return out
+    const index = indexOf(model)
+    const places = stagesByNum(model)
+    const ids = byId(model)
+    const flag = (num, what) => out.set(num, [...(out.get(num) ?? []), what])
+    const isDecision = n => {
+        if (places.get(n.num) !== 'discussion' || n.task || isStructure(n)) return false
+        const parent = index.get(n.num)?.parent
+        if (parent && isQuestion(parent)) return n.approved
+        return !n.children.length && ownStatus(n) !== 'open'
+    }
+    for (const n of allNodes(model.nodes)) {
+        if (isStructure(n)) continue
+        const topic = placeOf(model, n.num, index).topic
+        const on = name => topic.stages.includes(name)
+        const statusOf = name => {
+            const stage = topic.children.find(c => c.stage === name)
+            return stage && stageStatus(topic, stage).status
+        }
+        const from = linkedFrom(model, n, ids)
+        const to = linkedTo(model, n)
+        if (isDecision(n) && on('plan') && statusOf('plan') === 'active' && !to.some(m => places.get(m.num) === 'plan')) flag(n.num, 'unplanned')
+        if (n.planItem) {
+            if (on('discussion') && !from.some(isDecision)) flag(n.num, 'no-decision')
+            if (from.some(m => m.claim && !m.approved && !m.option)) flag(n.num, 'unapproved-claim')
+        }
+        if (n.task && places.get(n.num) === 'implementation') {
+            if (on('plan') && !from.some(m => m.planItem)) flag(n.num, 'no-plan-item')
+            if (on('verification') && !to.some(m => m.task && places.get(m.num) === 'verification')) flag(n.num, 'unchecked')
+        }
+    }
+    return out
+}
+
 /** A loop of dependencies, as the topics' numbers from one round to the same (`1, 2, 1`), or undefined when there is none. */
 function dependencyLoop(deps) {
     const state = new Map()
@@ -439,7 +521,8 @@ function dependencyLoop(deps) {
  * The lifecycle as the page and the map show it: each topic (`topics`, by number: its id, title, the stages on and the
  * topics it waits for)
  * and each stage heading (`stages`, by number: its topic, name, whether it is on, its status and progress, and `next`
- * on the first stage of a topic that is on and not started yet). Empty for an outline without topics.
+ * on the first stage of a topic that is on and not started yet), and the nodes that need review or have soft flags
+ * (`nodes`, by number). Empty for an outline without topics, save the marks.
  */
 export function lifecycleOf(model) {
     const deps = dependenciesOf(model)
@@ -457,7 +540,11 @@ export function lifecycleOf(model) {
         }
     }
     model.nodes.filter(n => n.topic).forEach(walk)
-    return { topics, stages }
+    // The nodes a ripple reached, and those with soft flags.
+    const nodes = {}
+    for (const n of allNodes(model.nodes)) if (n.review) nodes[n.num] = { review: true }
+    for (const [num, list] of softFlags(model)) nodes[num] = { ...nodes[num], flags: list }
+    return { topics, stages, nodes }
 }
 
 /** A list of stages as the agent gives it: known names, each once, in the lifecycle's order (`ordered`), at least one. */
@@ -504,8 +591,8 @@ export function statusOf(node) {
 
 const label = node => `${node.num} ${node.option ? `(${node.option}) ` : ''}${node.title}`
 
-/** What a node is, in the glossary's words, for the map and for reads; `waits`, a topic's dependencies. */
-function describe(node, parent, waits) {
+/** What a node is, in the glossary's words, for the map and for reads; `waits`, a topic's dependencies; `flags`, its soft flags. */
+function describe(node, parent, waits, flags) {
     if (node.topic) return `topic, stages on: ${node.stages.join(', ')}${waits?.length ? `; waits for ${waits.join(', ')}` : ''}`
     if (node.stage && parent?.topic) {
         const { status, progress } = stageStatus(parent, node)
@@ -518,6 +605,8 @@ function describe(node, parent, waits) {
     else parts.push({ approved: 'user-approved', claim: 'claim', open: 'open' }[ownStatus(node)])
     if (node.task) parts.push({ proposed: 'task', done: 'task done', failed: 'task failed' }[node.task])
     if (node.asks && !node.approved) parts.push('asks approval')
+    if (node.review) parts.push('needs review')
+    if (flags?.length) parts.push(`flags: ${flags.map(f => FLAG_TEXT[f]).join('; ')}`)
     return parts.join(', ')
 }
 
@@ -532,6 +621,7 @@ export function mapText(model, around = []) {
     const index = indexOf(model)
     const ids = byId(model)
     const deps = hasTopics(model) ? dependenciesOf(model) : new Map()
+    const flags = softFlags(model)
     const total = allNodes(model.nodes).length
     const shown = new Set()
     if (total > MAP_ALL) {
@@ -552,7 +642,7 @@ export function mapText(model, around = []) {
                 continue
             }
             const from = linkedFrom(model, n, ids).map(l => l.num)
-            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent, deps.get(n.num))}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
+            lines.push(`${'  '.repeat(depth)}${label(n)} [${describe(n, parent, deps.get(n.num), flags.get(n.num))}]${from.length ? ` (from ${from.join(', ')})` : ''}${n.current ? ' <- current' : ''}`)
             walk(n.children, n, depth + 1)
         }
         if (hidden) lines.push(`${'  '.repeat(depth)}… ${hidden} more under ${parent.num} (read ${parent.num} to see them)`)
@@ -563,7 +653,7 @@ export function mapText(model, around = []) {
 
 /** One node in full, as `read` returns it, with its links by the numbers the nodes have now. */
 function nodeText(model, node, parent) {
-    const lines = [`${label(node)} [${describe(node, parent, node.topic ? dependenciesOf(model).get(node.num) : undefined)}]`]
+    const lines = [`${label(node)} [${describe(node, parent, node.topic ? dependenciesOf(model).get(node.num) : undefined, softFlags(model).get(node.num))}]`]
     const links = linkLine(model, node)
     if (links) lines.push(`Links: ${links}`)
     if (node.text) lines.push(node.text)
@@ -881,12 +971,17 @@ const depthOf = node => 1 + Math.max(0, ...node.children.map(depthOf))
  * caller applies the operations to a copy, so a refused change leaves nothing behind.
  *
  * Returns what the result reports: the node last touched, notes, the numbers that changed, the messages to post, what
- * was taken out (`taken`: each removed node with where it stood), and what the user decided in chat (`decisions`:
- * approval log entries, each with its `node`, whose number may change yet).
+ * was taken out (`taken`: each removed node with where it stood), what the user decided in chat (`decisions`:
+ * approval log entries, each with its `node`, whose number may change yet), and the nodes a ripple marked as needing
+ * review (`marked`, upstream first).
  */
 export function applyOperations(model, ops, shown = {}) {
     if (!Array.isArray(ops) || !ops.length) throw new OpError('A change needs a list of operations.', 'Pass ops: [{ op: "add", … }, …].')
-    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [] }
+    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [], marked: [] }
+    /** A ripple from nodes that changed: what comes from them needs review. The result lists the marks, upstream first. */
+    const rippleFrom = nodes => {
+        for (const n of ripple(model, nodes)) if (!result.marked.includes(n)) result.marked.push(n)
+    }
     const touch = num => {
         result.touched = num
         result.touchedAll.push(num)
@@ -1172,6 +1267,9 @@ export function applyOperations(model, ops, shown = {}) {
                 result.notes.push(`${op.num} was user-approved; its wording changed, so ${node.task ? 'the approval no longer stands' : 'it is a claim again'} until the user approves the new wording.`)
             }
             shown[op.num] = nodeHash(node)
+            // Changing a node is looking at it again: its mark goes. New wording reaches what comes from it.
+            node.review = false
+            if (nodeHash(node) !== before) rippleFrom([node])
             touch(op.num)
         },
 
@@ -1237,6 +1335,10 @@ export function applyOperations(model, ops, shown = {}) {
                 const dropped = n.links.filter(id => goneIds.has(id))
                 if (!dropped.length) continue
                 n.links = n.links.filter(id => !goneIds.has(id))
+                // What it came from is gone: it needs review, and so does what comes from it.
+                if (!n.review) result.marked.push(n)
+                n.review = true
+                rippleFrom([n])
                 result.notes.push(`${n.num} no longer links to ${dropped.map(id => goneIds.get(id)).join(', ')}, which ${dropped.length === 1 ? 'was' : 'were'} taken out.`)
             }
             result.touchedAll = result.touchedAll.filter(n => !gone.includes(n))
@@ -1250,6 +1352,8 @@ export function applyOperations(model, ops, shown = {}) {
             const option = parent && isQuestion(parent)
             if (op.decision === 'pick') {
                 if (!option) throw new OpError(`${op.num} is not an option of a question.`, 'To record an approval of a node, use decision "approve".')
+                // The option picked before is no longer the decision: what comes from it needs review.
+                rippleFrom(parent.children.filter(c => c.approved && c !== node))
                 parent.children.forEach(c => (c.approved = false))
                 node.approved = true
                 result.decisions.push({ ...userEntry(model, node.num, 'picked'), node })
@@ -1268,6 +1372,8 @@ export function applyOperations(model, ops, shown = {}) {
                     if (n.approved && (!n.children.length || n.option)) result.decisions.push({ ...userEntry(model, n.num, 'took-back'), node: n })
                     n.approved = false
                 }
+                // A decision reopened: what was built on it needs review.
+                rippleFrom(allNodes([node]))
             } else throw new OpError(`A record's decision is "approve", "reopen", "pick" or "stage-off", not ${JSON.stringify(op.decision)}.`)
             touch(op.num)
         },
@@ -1294,6 +1400,16 @@ export function applyOperations(model, ops, shown = {}) {
             node.text = [node.text, outcome].filter(Boolean).join('\n\n')
             // A task takes no approval: one that an older outline left on it goes. An option's tick is the user's pick, which stands.
             if (takesNoApproval(node, parent)) node.approved = false
+            node.review = false
+            // A task that failed reaches what comes from it; a check that failed also undermines what it checks.
+            if (op.failed) {
+                const checked = placeOf(model, op.num).name === 'verification' ? linkedFrom(model, node) : []
+                for (const n of checked) {
+                    if (!n.review) result.marked.push(n)
+                    n.review = true
+                }
+                rippleFrom([node, ...checked])
+            }
             shown[op.num] = nodeHash(node)
             touch(op.num)
         },
@@ -1319,6 +1435,14 @@ export function applyOperations(model, ops, shown = {}) {
             fitStages(topic)
             for (const n of topic.children) shown[n.num] ??= nodeHash(n)
             touch(topic.num)
+        },
+
+        // The agent looked at a node a ripple reached and says it still holds: its mark goes. Changing the node clears it too.
+        holds(op) {
+            const { node } = get(op.num)
+            if (!node.review) throw new OpError(`${op.num} does not need review.`, 'holds clears the mark of a node a change upstream reached; this one has none.')
+            node.review = false
+            touch(op.num)
         },
 
         // Sets the topics a topic waits for, replacing those it had: it cannot go on until they are done. A link into
@@ -1403,6 +1527,9 @@ export function applyOperations(model, ops, shown = {}) {
             throw e
         }
     })
+    // The marks this change made that still stand: a node marked and then changed, or taken out, was dealt with.
+    const live = new Set(allNodes(model.nodes))
+    result.marked = result.marked.filter(n => n.review && live.has(n))
     return result
 }
 

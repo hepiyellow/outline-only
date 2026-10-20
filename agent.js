@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WORKFLOW_NAME, extractHeaders, renderPlain } from './outline.js'
-import { OpError, STAGE_NAME, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, serializeOutline, userEntry, userReopen, userStage } from './model.js'
+import { OpError, STAGE_NAME, allNodes, applyOperations, applyUserSet, findNode, mapText, nodeHash, normalize, parseOutline, queueText, readText, ripple, serializeOutline, userEntry, userReopen, userStage } from './model.js'
 import { createActionLog } from './actions.js'
 import { isSessionName } from './terminal.js'
 import { isSessionId, localCommandsSince } from './transcript.js'
@@ -239,6 +239,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of by('renamed')) lines.push(`- renamed the outline to "${e.title}"`)
         for (const e of by('stage')) lines.push(`- turned ${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num} ${e.title}${e.on ? '' : ': it keeps its nodes, folded away, and asks nothing; adapt the topic to it'}`)
         for (const e of by('reopened-stage')) lines.push(`- reopened ${e.num} ${e.title}: it is active again`)
+        for (const e of events.filter(e => e.kind === 'ripple')) lines.push(`- so ${e.title} changed, and what comes from it needs review: ${e.marks.join('; ')}`)
         return `On the page, since you were last told, the user:\n${lines.join('\n')}\nThe outline already shows this; do not record it again.`
     }
 
@@ -537,6 +538,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             notes.push(`${num} is left out of the queue: it has no pending action. The server lists the pending actions by itself (an open question, a task to run, a claim that asks for approval); to ask the user to approve a node, set ask on it.`)
         }
         const renumbered = [...result.renumbered].map(([from, to]) => `${from} -> ${to}`)
+        const marked = result.marked.map(n => `- ${n.num} ${n.title}`)
         const count = ops.length
         return {
             outline: `${at.project}/${at.file}`,
@@ -544,6 +546,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                 `Applied ${count} operation${count === 1 ? '' : 's'}.`,
                 notes.length ? notes.map(n => `Note: ${n}`).join('\n') : '',
                 renumbered.length ? `Numbers changed (use the new ones in chat, and update any node text that names the old ones): ${renumbered.join('; ')}` : '',
+                marked.length ? `This change reached what comes from it, marked as needing review, upstream first:\n${marked.join('\n')}\nChange each one that no longer holds (that clears its mark), and send holds { num } for each that still does.` : '',
                 events,
                 `Map:\n${mapText(model, result.touchedAll)}`,
                 queueSection(model),
@@ -627,6 +630,8 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         const at = Date.now()
         if (set !== undefined) {
             const events = applyUserSet(model, set)
+            // An approval or a pick taken back reopens a decision: what was built on it needs review.
+            const ripples = events.filter(e => e.kind === 'reopened').map(e => ({ e, marked: ripple(model, [findNode(model, e.num)]) }))
             normalize(model)
             writeModel(project, file, model)
             actionLog.record(project, file, events.map(e => userEntry(model, e.num, { approved: 'approved', picked: 'picked', reopened: 'took-back' }[e.kind])), at)
@@ -635,6 +640,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                 // Pending on the page from this moment, until the agent acknowledges it.
                 ledger.unacked[e.num] = { kind: e.kind, title: e.title, told: false }
             }
+            for (const { e, marked } of ripples) if (marked.length) ledger.events.push({ at, kind: 'ripple', num: e.num, title: `${e.num} ${e.title}`, marks: marked.map(n => `${n.num} ${n.title}`) })
             if (events.length) tellSoon(project, file)
         }
         // A stage the user turned on or off, or a Discussion or Plan they reopened: an action of theirs, in the action log,
@@ -695,11 +701,16 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         const told = active ? [] : Object.entries(ledger.unacked).filter(([, tick]) => tick.told)
         const model = readModel(at.project, at.file)
         const unplaced = model.queue.filter(item => !item.placed)
+        // The marks of ripples the turn left unaddressed: the turn is held open once over each.
+        const held = new Set(ledger.reviewHeld ?? [])
+        const markOf = n => n.id || n.num
+        const unreviewed = active ? [] : allNodes(model.nodes).filter(n => n.review && !held.has(markOf(n)))
+        if (unreviewed.length) ledger.reviewHeld = [...held, ...unreviewed.map(markOf)].slice(-500)
         if (active && unplaced.length) {
             for (const item of unplaced) item.placed = true
             writeModel(at.project, at.file, model)
         }
-        if (told.length || (!active && unplaced.length)) {
+        if (told.length || (!active && unplaced.length) || unreviewed.length) {
             if (text && !ledger.changed) ledger.held = text
             writeLedger(at.project, at.file, ledger)
             if (added) onMessages(at.project, at.file)
@@ -711,7 +722,10 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             const order = unplaced.length
                 ? `These pending actions have no place in the queue yet:\n${unplaced.map(item => `- ${item.num} [${item.kind}] ${item.label}`).join('\n')}\nThe order of the queue is yours to give. Before you end the turn, make one change call with a queue operation that lists the pending actions, most important first:\n${queueText(model)}`
                 : ''
-            return { text: `[outline "${headersOf(at).title || at.file}"] ${[ticks, order].filter(Boolean).join('\n\n')}` }
+            const review = unreviewed.length
+                ? `A change upstream reached these nodes, and they need review:\n${unreviewed.map(n => `- ${n.num} ${n.title}`).join('\n')}\nBefore you end the turn, change each one that no longer holds (that clears its mark), and send holds { num } for each that still does, in one change call.`
+                : ''
+            return { text: `[outline "${headersOf(at).title || at.file}"] ${[ticks, order, review].filter(Boolean).join('\n\n')}` }
         }
         const answer = ledger.held || text
         const posted = !ledger.changed && !!answer

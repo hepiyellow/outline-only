@@ -5,7 +5,7 @@ export type Status = 'open' | 'claim' | 'approved'
 
 /** The `@` tags a node's heading line can carry, right after its number. */
 /** The tags of a node, by the names the code uses: `@user-approved` is `approved`, `@agent-claim` is `claim`, `@action-done` is `action` and `ran`, `@action-failed` is `action` and `failed`. */
-export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed' | 'topic' | 'stage-done' | 'plan-item'
+export type Tag = 'approved' | 'claim' | 'asks-approval' | 'options' | 'option' | 'recommended' | 'current' | 'action' | 'ran' | 'failed' | 'topic' | 'stage-done' | 'plan-item' | 'needs-review'
 
 /** A closing line of a node's text: `@Summary.`, `@Recommendation.` or `@Action.`, shown after its own tag. */
 export interface ClosingLine {
@@ -50,7 +50,10 @@ export interface OutlineNode {
 export type StageName = 'discussion' | 'plan' | 'implementation' | 'verification' | 'preservation'
 
 /** Where a stage of a topic stands (model.js `stageStatus`). */
-export type StageStatus = 'off' | 'not-started' | 'active' | 'done'
+export type StageStatus = 'off' | 'not-started' | 'active' | 'done' | 'needs-review'
+
+/** What the lifecycle expects of a node and does not find (model.js `softFlags`): a badge, never refused. */
+export type SoftFlag = 'unplanned' | 'no-decision' | 'unapproved-claim' | 'no-plan-item' | 'unchecked'
 
 /** A stage heading, as the server reads it (model.js `lifecycleOf`). */
 export interface StageInfo {
@@ -70,6 +73,8 @@ export interface Lifecycle {
     /** Each topic: its id, title, the stages on, and the numbers of the topics it waits for (its dependencies). */
     topics: Record<string, { id: string; title: string; stages: StageName[]; waitsFor: string[] }>
     stages: Record<string, StageInfo>
+    /** The nodes a ripple reached (`review`), and those with soft flags, by number. */
+    nodes: Record<string, { review?: boolean; flags?: SoftFlag[] }>
 }
 
 /** One change of a node, from GET /api/outline/<project>/<file>/history?num=: when, and the node's subtree then. */

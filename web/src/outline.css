@@ -802,3 +802,20 @@ li.dx-del-block, li.dx-add-block { padding-left: 4px; }
     font-size: 0.75rem;
     font-weight: 500;
 }
+/* What the lifecycle says of a node: it needs review (a change upstream reached it), and its soft flags. */
+.lc-badge {
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.lc-badge.review {
+    background: color-mix(in srgb, var(--claim) 16%, var(--background));
+    color: var(--foreground);
+}
+.lc-badge.flag {
+    border: 1px dashed var(--border);
+    color: var(--muted-foreground);
+}
+.lc-stage[data-status='needs-review'] > .stage-head .stage-status { color: var(--foreground); font-weight: 600; }

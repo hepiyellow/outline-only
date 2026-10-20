@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { after, before, describe, test } from 'node:test'
-import { startMcp, startServer } from './helpers.js'
+import { runHook, startMcp, startServer } from './helpers.js'
 
 // The lifecycle through the agent's tools: what the agent sends, what the server writes, and what it is told.
 describe('the lifecycle through the MCP tools', () => {
@@ -67,7 +67,7 @@ describe('the lifecycle through the MCP tools', () => {
             ],
         })
         assert.equal(placed.error, false, placed.text)
-        assert.match(placed.text, /^ {4}1\.2\.1 Roll out by region \[plan item, open\] \(from 1\.1\.2\.2\)$/m)
+        assert.match(placed.text, /^ {4}1\.2\.1 Roll out by region \[plan item, open, flags: built on a claim the user has not approved\] \(from 1\.1\.2\.2\)$/m)
         assert.match(placed.text, /^ {2}1\.3 Implementation \[stage, active, 0 of 1 tasks done\]$/m)
     })
 
@@ -97,5 +97,28 @@ describe('the lifecycle through the MCP tools', () => {
             history.flatMap(e => e.did ?? []).map(d => `${d.what} ${d.stage}`),
             ['turned-off implementation', 'turned-on implementation', 'turned-off plan'],
         )
+    })
+
+    test('a reworded decision lists what it reached; the turn-end hook holds the turn open once over marks left', async () => {
+        await mcp.tool('read', { num: '1.1.2.2' })
+        const changed = await mcp.tool('change', { ops: [{ op: 'update', num: '1.1.2.2', text: 'Sized for twice the load.' }, { op: 'queue', items: [{ num: '1.3.1' }] }] })
+        assert.equal(changed.error, false, changed.text)
+        assert.match(changed.text, /^This change reached what comes from it, marked as needing review, upstream first:\n- 1\.1\.2\.1 Size the cluster\n- 1\.2\.1 Roll out by region\n- 1\.3\.1 Deploy\nChange each one/m)
+        const held = await runHook(server, { hook_event_name: 'Stop', stop_hook_active: false })
+        assert.match(held, /A change upstream reached these nodes, and they need review:\\n- 1\.1\.2\.1 Size the cluster/)
+        // Once: the same marks do not hold the next turn.
+        assert.equal(await runHook(server, { hook_event_name: 'Stop', stop_hook_active: false }), '')
+        const cleared = await mcp.tool('change', { ops: [{ op: 'holds', num: '1.1.2.1' }, { op: 'holds', num: '1.2.1' }, { op: 'holds', num: '1.3.1' }] })
+        assert.doesNotMatch(cleared.text, /needs review/)
+    })
+
+    test('an approval the user takes back on the page reaches what was built on it, and the agent is told', async () => {
+        const act = body =>
+            fetch(`${server.url}/api/outline/shop/${path.basename(file, '.md')}/act`, { method: 'POST', headers: { 'content-type': 'application/json', origin: server.url }, body: JSON.stringify(body) })
+        await act({ set: [{ num: '1.1.2.2', approved: true }] })
+        await act({ set: [{ num: '1.1.2.2', approved: false }] })
+        assert.match(outlineText(), /^#### 1\.1\.2\.1 @needs-review /m)
+        const read = await mcp.tool('read', { num: '1.1.2.1' })
+        assert.match(read.text, /^- so 1\.1\.2\.2 A shared Redis cluster changed, and what comes from it needs review: 1\.1\.2\.1 Size the cluster; 1\.2\.1 Roll out by region; 1\.3\.1 Deploy$/m)
     })
 })

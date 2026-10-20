@@ -201,4 +201,38 @@ describe('the lifecycle on the page', () => {
         await page.locator('[data-topic="2"] > .topic-head .waits-for button').click()
         await until(() => node('1.1.1').isVisible(), { what: 'topic 1 to open' })
     })
+
+    test('a node a ripple reached says it needs review, soft flags show as badges, and a collapsed stage it reaches opens', async () => {
+        const body = review => `# 1. @topic @stages:discussion,plan,implementation @id:topica Search
+
+## 1.1 @stage:discussion Discussion
+
+### 1.1.1 @agent-claim @id:aaaaa1 Use Redis
+
+## 1.2 @stage:plan @stage-done Plan
+
+### 1.2.1 @plan-item ${review ? '@needs-review ' : ''}@id:aaaaa2 @links:aaaaa1 Size the cluster
+
+## 1.3 @stage:implementation Implementation
+
+### 1.3.1 @task Tidy up
+
+@Task. Tidies.
+`
+        await show('ripple', body(false))
+        assert.equal(await stage('1.2').getAttribute('data-status'), 'done')
+        assert.equal(await node('1.2.1').isVisible(), false)
+        assert.equal(await node('1.3.1').locator('[data-flag="no-plan-item"]').textContent(), 'no plan item')
+        assert.equal(await node('1.3.1').locator('[data-flag="no-plan-item"]').getAttribute('title'), 'This task carries out no plan item')
+        // The viewer opens the stage and closes it again: closed by their own choice.
+        await stage('1.2').locator('> .stage-head .node-title').click()
+        await until(() => node('1.2.1').isVisible(), { what: 'the stage to open' })
+        await stage('1.2').locator('> .stage-head .node-title').click()
+        await until(async () => !(await node('1.2.1').isVisible()), { what: 'the stage to close' })
+        fs.writeFileSync(path.join(server.dir, 'demo', 'ripple.md'), HEAD + body(true))
+        await until(async () => (await stage('1.2').getAttribute('data-status')) === 'needs-review', { what: 'the stage to need review' })
+        await until(() => node('1.2.1').isVisible(), { what: 'the stage to open' })
+        assert.equal(await stage('1.2').locator('[data-stage-status]').textContent(), 'Needs review')
+        assert.equal(await node('1.2.1').locator('[data-review]').textContent(), 'needs review')
+    })
 })

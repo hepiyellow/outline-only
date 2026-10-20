@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, test } from 'node:test'
-import { OpError, allNodes, applyOperations, applyUserSet, findNode, lifecycleOf, mapText, nodeHash, normalize, parseOutline, readText, serializeOutline } from '../model.js'
+import { OpError, allNodes, applyOperations, applyUserSet, findNode, lifecycleOf, mapText, nodeHash, normalize, parseOutline, readText, serializeOutline, softFlags } from '../model.js'
 import { countCheckboxProgress, outlinePayload } from '../outline.js'
 import { FIXTURES, ROOT, inServerMode } from './helpers.js'
 
@@ -263,7 +263,7 @@ describe('topics and stages', () => {
             { op: 'add', num: '1.2.3', title: 'What the plan leaves out' },
         ])
         assert.match(serializeOutline(model), /^### 1\.2\.1 @plan-item @id:[a-z0-9]{6} @links:[a-z0-9]{6} Size the cluster$/m)
-        assert.match(mapText(model), /^ {4}1\.2\.1 Size the cluster \[plan item, open\] \(from 1\.1\.1\)$/m)
+        assert.match(mapText(model), /^ {4}1\.2\.1 Size the cluster \[plan item, open, flags: built on a claim the user has not approved\] \(from 1\.1\.1\)$/m)
         refused(model, [{ op: 'add', num: '1.1.2', title: 'Deploy', task: 'Deploys it.' }], /1\.1\.2 is a task, and Discussion holds no tasks/, /Implementation, Verification \(where a task is a check\) and Preservation: place it under 1\.3 Implementation, 1\.4 Verification/)
         refused(model, [{ op: 'add', num: '1.2.4', title: 'Deploy', task: 'Deploys it.' }], /Plan holds no tasks/)
         refused(model, [{ op: 'add', num: '1.3.2', title: 'Cache keys', plan: true }], /only a Plan stage holds plan items/, /Place it under 1\.2 Plan/)
@@ -477,3 +477,101 @@ describe('dependencies', () => {
     })
 })
 
+
+describe('ripples and soft flags', () => {
+    /** One topic with every stage: a decision, a plan item from it, a task from that, a check of the task. */
+    function chainOfWork() {
+        const model = outline('')
+        change(model, [
+            { op: 'add', num: '1', title: 'Search', stages: ['discussion', 'plan', 'implementation', 'verification'] },
+            { op: 'add', num: '1.1.1', title: 'Use Redis', status: 'claim' },
+            { op: 'add', num: '1.1.2', title: 'Where to cache', options: [{ title: 'Redis' }, { title: 'Memory' }] },
+            { op: 'add', num: '1.2.1', title: 'Size the cluster', plan: true, links: ['1.1.1'] },
+            { op: 'add', num: '1.3.1', title: 'Write the client', task: 'Writes it.', links: ['1.2.1'] },
+            { op: 'add', num: '1.4.1', title: 'Run the tests', task: 'Runs them.', links: ['1.3.1'] },
+        ])
+        return model
+    }
+    const marks = model => allNodes(model.nodes).filter(n => n.review).map(n => n.num)
+
+    test('rewording a decision marks every node that comes from it, upstream first, and their stages; the queue is untouched', () => {
+        const model = chainOfWork()
+        const queue = JSON.stringify(model.queue)
+        const result = change(model, [{ op: 'update', num: '1.1.1', text: 'A shared cluster, not one per instance.' }])
+        assert.deepEqual(result.marked.map(n => n.num), ['1.2.1', '1.3.1', '1.4.1'])
+        assert.deepEqual(marks(model), ['1.2.1', '1.3.1', '1.4.1'])
+        assert.match(serializeOutline(model), /^### 1\.2\.1 @plan-item @needs-review @id:[a-z0-9]{6} @links:[a-z0-9]{6} Size the cluster$/m)
+        assert.deepEqual(Object.values(lifecycleOf(model).stages).map(s => s.status), ['active', 'needs-review', 'needs-review', 'needs-review'])
+        assert.match(mapText(model), /^ {4}1\.2\.1 Size the cluster \[plan item, open, needs review/m)
+        assert.equal(JSON.stringify(model.queue), queue)
+        // A change that leaves the wording as it was reaches nothing.
+        const same = chainOfWork()
+        assert.deepEqual(change(same, [{ op: 'update', num: '1.1.1', ask: true }]).marked, [])
+    })
+
+    test('a mark goes when the agent says the node holds, or changes it, which ripples on', () => {
+        const model = chainOfWork()
+        change(model, [{ op: 'update', num: '1.1.1', text: 'Reworded.' }])
+        change(model, [{ op: 'holds', num: '1.2.1' }])
+        assert.deepEqual(marks(model), ['1.3.1', '1.4.1'])
+        refused(model, [{ op: 'holds', num: '1.2.1' }], /1\.2\.1 does not need review/, /has none/)
+        const result = change(model, [{ op: 'update', num: '1.3.1', text: 'The client now takes a cluster address.' }])
+        assert.deepEqual(marks(model), ['1.4.1'])
+        assert.deepEqual(result.marked.map(n => n.num), [])
+        // Finishing a task again clears its mark too.
+        change(model, [{ op: 'finish', num: '1.4.1', outcome: 'They pass.' }])
+        assert.deepEqual(marks(model), [])
+    })
+
+    test('a decision reopened, or a pick moved, reaches what was built on it', () => {
+        const model = chainOfWork()
+        change(model, [{ op: 'record', num: '1.1.1', decision: 'approve' }])
+        assert.deepEqual(change(model, [{ op: 'record', num: '1.1.1', decision: 'reopen' }]).marked.map(n => n.num), ['1.2.1', '1.3.1', '1.4.1'])
+        const picks = chainOfWork()
+        change(picks, [{ op: 'record', num: '1.1.2.1', decision: 'pick' }, { op: 'add', num: '1.2.2', title: 'Run Redis', plan: true, links: ['1.1.2.1'] }])
+        assert.deepEqual(change(picks, [{ op: 'record', num: '1.1.2.2', decision: 'pick' }]).marked.map(n => n.num), ['1.2.2'])
+    })
+
+    test('a check that fails marks the task it checks, and what comes from both', () => {
+        const model = chainOfWork()
+        change(model, [{ op: 'finish', num: '1.3.1', outcome: 'Written.' }])
+        const result = change(model, [{ op: 'finish', num: '1.4.1', outcome: 'Two tests fail.', failed: true }])
+        assert.deepEqual(result.marked.map(n => n.num), ['1.3.1'])
+        assert.deepEqual(marks(model), ['1.3.1'])
+        assert.equal(lifecycleOf(model).stages['1.3'].status, 'needs-review')
+    })
+
+    test('a node whose link went with a node taken out needs review', () => {
+        const model = chainOfWork()
+        const result = change(model, [{ op: 'remove', num: '1.2.1' }])
+        assert.deepEqual(result.marked.map(n => n.num), ['1.3.1', '1.4.1'])
+        assert.deepEqual(result.notes, ['1.3.1 no longer links to 1.2.1, which was taken out.'])
+    })
+
+    test('soft flags say what the lifecycle expects and does not find, and are never refused', () => {
+        const model = outline('')
+        change(model, [
+            { op: 'add', num: '1', title: 'Search', stages: ['discussion', 'plan', 'implementation', 'verification'] },
+            { op: 'add', num: '1.1.1', title: 'Use Redis', status: 'claim' },
+            { op: 'add', num: '1.1.2', title: 'Keep a minute of staleness', status: 'claim' },
+            { op: 'add', num: '1.2.1', title: 'Size the cluster', plan: true, links: ['1.1.1'] },
+            { op: 'add', num: '1.2.2', title: 'Add metrics', plan: true },
+            { op: 'add', num: '1.3.1', title: 'Write the client', task: 'Writes it.', links: ['1.2.1'] },
+            { op: 'add', num: '1.3.2', title: 'Tidy up', task: 'Tidies.' },
+            { op: 'add', num: '1.4.1', title: 'Run the tests', task: 'Runs them.', links: ['1.3.1'] },
+        ])
+        assert.deepEqual(Object.fromEntries(softFlags(model)), {
+            '1.1.2': ['unplanned'],
+            '1.2.1': ['unapproved-claim'],
+            '1.2.2': ['no-decision'],
+            '1.3.2': ['no-plan-item', 'unchecked'],
+        })
+        assert.deepEqual(lifecycleOf(model).nodes['1.3.2'], { flags: ['no-plan-item', 'unchecked'] })
+        // Approved, the claim no longer flags the plan item; with Verification off, nothing asks for a check.
+        change(model, [{ op: 'record', num: '1.1.1', decision: 'approve' }, { op: 'record', num: '1', decision: 'stage-off', stage: 'verification' }])
+        assert.deepEqual(softFlags(model).get('1.2.1'), undefined)
+        assert.deepEqual(softFlags(model).get('1.3.2'), ['no-plan-item'])
+        // An outline without topics has none.
+        assert.equal(softFlags(outline(PLAIN)).size, 0)
+    })
+})

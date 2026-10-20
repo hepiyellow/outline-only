@@ -73,6 +73,7 @@ const TOOLS = [
             '- remove { num }: takes a node out with everything under it; the siblings after it are renumbered, and a link to a node taken out is dropped.',
             '- record { num, decision, stage? }: what the user decided in chat. approve, reopen, or pick (num is the option); stage-off with stage when the user said to turn a stage of topic num off (it keeps its nodes, folded away; adapt the topic to it). Only what the user said, never your own judgment.',
             '- stages { num?, on }: turns stages of topic num on (num left out: the outline\'s one topic). You never turn one off: only the user does.',
+            '- holds { num }: you looked at a node marked as needing review (a change upstream reached it: a decision reworded or reopened, a check failed) and it still holds; its mark goes. Changing the node clears the mark too. Marks never enter the queue.',
             '- depends { num, on }: the topics topic num waits for, by number, replacing those it had ([] for none): it cannot go on until they are done. A link from a node into another topic makes its topic wait for that one by itself. Dependencies never form a loop. Topics are never reordered for them.',
             '- done { num }: closes the Discussion or Plan stage num: its deciding or planning is done. Refused while a Discussion holds an unresolved question. Implementation, Verification and Preservation are done once their tasks are.',
             '- finish { num, outcome, failed? }: you carried out what the node describes, so it shows as a task done; outcome says what happened. The node is a task the user ran, or any node about something the user asked you in chat to do.',
@@ -89,7 +90,7 @@ const TOOLS = [
                     items: {
                         type: 'object',
                         properties: {
-                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'depends', 'done', 'acknowledge', 'message', 'queue'] },
+                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'depends', 'done', 'holds', 'acknowledge', 'message', 'queue'] },
                             num: { ...text, description: 'Full-path node number, e.g. 2.1.3.' },
                             ...NODE,
                             options: { type: 'array', items: OPTION, description: 'add: the options of a question, at least two; at most one recommended.' },

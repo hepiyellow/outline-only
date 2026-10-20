@@ -11,7 +11,7 @@ import { NodeMessages } from './Inbox'
 import { useNotify } from './Notice'
 import type { PendingChange } from '@/lib/pending'
 import { DIFF_ICON, MINUS_ICON, PLUS_ICON } from './queue'
-import { StageSection, TopicSection } from './Lifecycle'
+import { LifecycleBadges, StageSection, TopicSection } from './Lifecycle'
 import { Marks, StatusBox, Tick, type OwnRole } from './StatusBox'
 
 /** What every node of the Outline tab needs: statuses, which nodes are open, the current path, and the user's actions. */
@@ -520,9 +520,9 @@ export function RowMarks({ node, box }: { node: OutlineNode; box: Box }) {
  * ("used by 3.2"). Each number is a click to that node.
  */
 function LinkChips({ node }: { node: OutlineNode }) {
-    const { links, onReveal } = useOutlineCtx()
-    const own = links.get(node.num)
-    if (!own) return null
+    const { links, lifecycle, onReveal } = useOutlineCtx()
+    const own = links.get(node.num) ?? { from: [], usedBy: [] }
+    if (!own.from.length && !own.usedBy.length && !lifecycle.nodes?.[node.num]) return null
     const chip = (what: 'from' | 'used-by', nums: string[]) =>
         nums.length > 0 && (
             <span className="link-chip" data-links={what}>
@@ -550,6 +550,7 @@ function LinkChips({ node }: { node: OutlineNode }) {
         <span className="link-chips">
             {chip('from', own.from)}
             {chip('used-by', own.usedBy)}
+            <LifecycleBadges num={node.num} />
         </span>
     )
 }
