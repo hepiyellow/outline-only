@@ -7,7 +7,7 @@ import type { Transcript } from '@/hooks/useTranscript'
 import { referenceTo, removalOf } from '@/lib/references'
 import { useUnread } from '@/hooks/useUnread'
 import { useOutline } from '@/hooks/useOutline'
-import { UNTITLED, allNodes, currentPath, duplicateNums, isParent, nodeLabel, pathNums } from '@/lib/outline'
+import { UNTITLED, allNodes, currentPath, duplicateNums, isParent, isStarting, nodeLabel, pathNums } from '@/lib/outline'
 import { shownNodes } from '@/lib/pending'
 import { Statuses, type KindKey } from '@/lib/status'
 import { scrollToNode } from '@/lib/sticky'
@@ -355,7 +355,7 @@ function Loaded({ outline, gone, viewer, stateLoaded, patch, session, transcript
                 <>
                     {/* Room under the content for the input box. */}
                     <div aria-hidden="true" style={{ height: 'var(--composer-h, 60px)' }} />
-                    <InputBox outline={outline} viewer={viewer} patch={patch} busy={session.busy} using={session.using} messages={session.messages} onSeen={onSeen} onSent={session.working} onReveal={reveal} added={added} inOutline={tab === 'outline'} />
+                    <InputBox outline={outline} viewer={viewer} patch={patch} busy={session.busy} starting={isStarting(outline, linked)} using={session.using} messages={session.messages} onSeen={onSeen} onSent={session.working} onReveal={reveal} added={added} inOutline={tab === 'outline'} />
                 </>
             )}
             {/* File mode only: in server mode a tick is recorded at once, and nothing waits to be copied. */}

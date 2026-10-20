@@ -1,7 +1,13 @@
-import type { OutlineNode } from '@/types'
+import type { Outline, OutlineNode } from '@/types'
 
 /** What the page shows for the title of an outline nobody has named yet. */
 export const UNTITLED = 'Untitled'
+
+/**
+ * Server mode: the outline the server opened for a session it has just started, while that session's agent loads the
+ * outline plugin. It links to no session until the agent attaches to it.
+ */
+export const isStarting = (outline: Outline, linked: boolean) => linked && outline.mode === 'server' && !outline.session
 
 /** Every node of the tree, depth first, parents before their children. */
 export function allNodes(nodes: OutlineNode[]): OutlineNode[] {

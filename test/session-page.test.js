@@ -121,7 +121,7 @@ describe('inbox, input box and spinner', () => {
         assert.equal(await waitSent(1), 'Re: outline "Caching for the search service" › 3. Invalidation › 3.2 Time to live\nWhy 60 seconds?')
         await page.locator('[data-chip]').waitFor({ state: 'detached' })
         assert.equal(await box().inputValue(), '')
-        // Sending starts the working dot on the button: the agent is working.
+        // Sending starts the working spinner beside the inbox: the agent is working.
         await page.locator('[role="status"][data-busy]').waitFor()
     })
 
@@ -147,21 +147,21 @@ describe('inbox, input box and spinner', () => {
     })
 
     test('while the agent works the button stops it, until a new message is typed', async () => {
-        // Idle with nothing typed: a send button that cannot be pressed, and no dot.
+        // Idle with nothing typed: a send button that cannot be pressed, and no spinner.
         assert.equal(await page.getByRole('button', { name: 'Send' }).isDisabled(), true)
         assert.equal(await page.locator('[aria-label="The agent is idle"]').isVisible(), false)
         await box().fill('Go on')
         await box().press('Enter')
         await waitSent(1)
-        const dot = page.locator('[role="status"][data-busy]')
-        await dot.waitFor()
+        const spinner = page.locator('[role="status"][data-busy]')
+        await spinner.waitFor()
         await page.getByRole('button', { name: 'Stop' }).waitFor()
-        // Typing a new message brings the send button back; the dot keeps blinking.
+        // Typing a new message brings the send button back; the spinner keeps turning.
         await box().fill('And another thing')
         await page.getByRole('button', { name: 'Send' }).waitFor()
         assert.equal(await page.getByRole('button', { name: 'Stop' }).count(), 0)
-        assert.equal(await dot.isVisible(), true)
-        assert.notEqual(await dot.evaluate(e => getComputedStyle(e).animationName), 'none')
+        assert.equal(await spinner.isVisible(), true)
+        assert.notEqual(await spinner.locator('svg').evaluate(e => getComputedStyle(e).animationName), 'none')
         await box().fill('')
         await page.getByRole('button', { name: 'Stop' }).click()
         await until(() => stopped.length === 1, { what: 'the stop to be sent' })
@@ -281,7 +281,7 @@ describe('inbox, input box and spinner', () => {
             await page.waitForTimeout(600)
             assert.deepEqual(await shown(), ['claude-opus-5-5', 'medium'])
             fs.appendFileSync(transcript(), `${JSON.stringify({ isSidechain: false, sessionId: SESSION, timestamp: '2026-10-02T11:00:06.000Z', type: 'system', subtype: 'turn_duration', durationMs: 1 })}\n`)
-            // The idle dot is hidden, so it has no role to find it by.
+            // The idle spinner is hidden, so it has no role to find it by.
             await page.waitForFunction(() => !document.querySelector('[role="status"][data-busy]'))
             assert.deepEqual(await shown(), ['claude-opus-5-5', 'medium'])
             // The next turn's answer is the one the pick applies to.

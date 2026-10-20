@@ -71,17 +71,20 @@ describe('a session started from New', { skip: !hasTmux && 'no tmux' }, () => {
         const list = await (await fetch(`${server.url}/api/outlines`)).json()
         assert.equal(list.starting.some(s => s.terminal === terminal), false)
         assert.equal(list.outlines.some(o => o.file === outline.file && o.terminal === terminal), true)
-        // The page shows it empty, with the input box to write to the agent.
+        // The page shows it empty, with the input box to write to the agent, and the agent loading the outline plugin:
+        // a line under the empty message, and the working spinner.
         await page.goto(`${server.url}/proj/${outline.file}`)
-        assert.match(await page.locator('[data-empty]').textContent(), /This outline is empty, and its agent is starting\. Write below to begin\./)
+        assert.match(await page.locator('[data-empty]').textContent(), /^This outline is empty\. Write to the agent below to begin\.Claude is initializing the outline plugin\.\.\.$/)
         await page.getByRole('textbox', { name: 'Message the session' }).waitFor()
+        await page.getByRole('status', { name: 'The agent is working' }).waitFor()
         // The session's agent attaches to that outline by its session terminal, and the title the user gave stays.
         const session = 'dddddddd-1111-4222-8333-444444444444'
         const attached = await agentStart({ session, terminal, cwd: path.join(scratch, 'proj'), project: 'proj', title: 'What the agent would call it' })
         assert.equal(attached.outline, `proj/${outline.file}`)
         assert.match(attached.text, /Reattached to the outline "Opened at once"/)
         assert.match(fs.readFileSync(file, 'utf8'), new RegExp(`^Session: ${session}$`, 'm'))
-        await page.locator('[data-empty]').filter({ hasText: 'This outline is empty. Write to the agent below to begin.' }).waitFor()
+        await page.locator('[data-initializing]').waitFor({ state: 'detached' })
+        assert.equal(await page.locator('[data-empty]').textContent(), 'This outline is empty. Write to the agent below to begin.')
         // Another session in a terminal of the same name later does not take it over.
         const other = await agentStart({ session: 'eeeeeeee-1111-4222-8333-444444444444', terminal, cwd: path.join(scratch, 'elsewhere'), project: 'elsewhere', title: 'Another' })
         assert.match(other.outline, /^elsewhere\//)
@@ -160,7 +163,7 @@ describe('a session started from New', { skip: !hasTmux && 'no tmux' }, () => {
         // The field is above the empty message, and nothing else names the outline but the placeholder.
         const field = page.locator('[data-untitled]')
         assert.equal((await field.textContent()).trim(), 'Untitled')
-        assert.match(await page.locator('.outline-tab > [data-untitled]:first-child + [data-empty]').textContent(), /This outline is empty, and its agent is starting\./)
+        assert.match(await page.locator('.outline-tab > [data-untitled]:first-child + [data-empty]').textContent(), /Claude is initializing the outline plugin/)
         assert.equal(await page.locator('[data-topbar] [data-title]').count(), 0)
         assert.equal(await page.title(), 'Untitled')
         const row = pane().locator(`[data-pane-outline="proj/${outline.file}"]`)

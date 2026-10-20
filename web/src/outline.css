@@ -548,11 +548,13 @@ button.ck[data-state='open']:hover { border-color: var(--tick); }
     [data-chip][data-added] { animation: none; }
 }
 
-/* The working indicator on the input box's button: it blinks slowly while the agent is in a turn. */
-.work-dot[data-busy] { animation: workdot 1.8s ease-in-out infinite; }
-@keyframes workdot { 50% { opacity: 0.15; } }
+/* An ellipsis whose dots light up one after another, while something is still going on. */
+.ellipsis > span { animation: ellipsis 1.4s infinite; opacity: 0.2; }
+.ellipsis > span:nth-child(2) { animation-delay: 0.2s; }
+.ellipsis > span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ellipsis { 20%, 60% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-    .work-dot[data-busy] { animation: none; }
+    .ellipsis > span { animation: none; opacity: 1; }
 }
 
 
