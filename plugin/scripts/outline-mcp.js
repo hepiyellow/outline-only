@@ -79,6 +79,7 @@ const TOOLS = [
             '- done { num }: closes the Discussion or Plan stage num: its deciding or planning is done. Refused while a Discussion holds an unresolved question. Implementation, Verification and Preservation are done once their tasks are.',
             '- finish { num, outcome, failed? }: you carried out what the node describes, so it shows as a task done; outcome says what happened. The node is a task the user ran, or any node about something the user asked you in chat to do.',
             '- acknowledge {}: you took in the ticks the user made on the page and nothing in the outline follows from them. Any change made after you were told of a tick acknowledges it, so send this only in a change that holds nothing else.',
+            '- note { text }: one line for the project\'s topic notes, on how the user wants work divided into topics: add one after the user merges topics you split, or rejects a split. start gives you the notes; read them before you make topics.',
             '- message { text, num? }: a note for the inbox about something the outline does not hold.',
             '- queue { items: [{ num }] }: the order of the queue, most important first. The queue is the pending actions (an open question, a task to run, a claim that asks for approval): the server lists them from the nodes, and you only order them. A node with no pending action is left out; one you do not list keeps the place it had.',
         ].join('\n'),
@@ -91,7 +92,7 @@ const TOOLS = [
                     items: {
                         type: 'object',
                         properties: {
-                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'depends', 'done', 'holds', 'split', 'acknowledge', 'message', 'queue'] },
+                            op: { enum: ['add', 'update', 'move', 'remove', 'record', 'finish', 'stages', 'depends', 'done', 'holds', 'split', 'note', 'acknowledge', 'message', 'queue'] },
                             num: { ...text, description: 'Full-path node number, e.g. 2.1.3.' },
                             ...NODE,
                             options: { type: 'array', items: OPTION, description: 'add: the options of a question, at least two; at most one recommended.' },

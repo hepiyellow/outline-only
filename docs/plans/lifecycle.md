@@ -1,6 +1,6 @@
 # Plan — Lifecycle: topics, stages and links
 
-**Status:** designed, not started. · **Source:** [Live Outline — Lifecycle & Tree Rules Handoff](https://claude.ai/code/artifact/be34c566-6753-4ce9-8286-eeced4bc91be) (2026-10-19), grilled 2026-10-20 · **Decisions:** [ADR 0005](../adr/0005-outlines-follow-a-lifecycle.md), with [ADR 0003](../adr/0003-the-server-owns-the-outline.md) and [ADR 0004](../adr/0004-the-server-lists-the-pending-actions.md) standing · **Terms:** [CONTEXT.md](../../CONTEXT.md)
+**Status:** built, steps 1 to 10, one commit each (October 2026); the overview's look (step 8) was built without the mock-up and is open for review. · **Source:** [Live Outline — Lifecycle & Tree Rules Handoff](https://claude.ai/code/artifact/be34c566-6753-4ce9-8286-eeced4bc91be) (2026-10-19), grilled 2026-10-20 · **Decisions:** [ADR 0005](../adr/0005-outlines-follow-a-lifecycle.md), with [ADR 0003](../adr/0003-the-server-owns-the-outline.md) and [ADR 0004](../adr/0004-the-server-lists-the-pending-actions.md) standing · **Terms:** [CONTEXT.md](../../CONTEXT.md)
 
 ## Goal
 
@@ -13,7 +13,7 @@ Server mode only. File mode is being retired ([two-modes](two-modes.md)) and get
 - **The model** (`model.js`) is a tree of numbered headings, at most six levels deep, stored as markdown; the level is the count of `#` signs. A node has one kind (plain, claim, question, option, task), written as tags on its heading line. Numbers are dense.
 - **The agent** sends `change` with nine operations; a refused operation says why and what to do, which is the error path every rule below uses.
 - **The queue** is the pending actions only, listed by the server and ordered by the agent (ADR 0004).
-- **None of this plan exists yet:** no ids, links, topics, stages, overview or layouts.
+- **Before this plan:** no ids, links, topics, stages, overview or layouts. What was decided while building it, where the plan left it open, is in the pull request that built it.
 
 ## What was decided
 

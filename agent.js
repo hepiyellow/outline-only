@@ -15,6 +15,9 @@ import { isSessionId, localCommandsSince } from './transcript.js'
 /** The folder of the outlines folder where each outline's ledger is kept: one JSON file per outline. */
 export const LEDGER_DIR = '.ledger'
 
+/** The folder of the outlines folder where each project's topic notes are kept: one markdown file per project. */
+export const TOPIC_NOTES_DIR = '.topic-notes'
+
 /** Most messages a ledger keeps. */
 const MAX_MESSAGES = 200
 /** Longest reply of a turn that is kept as a message. */
@@ -154,6 +157,34 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
 
     const readModel = (project, file) => parseOutline(fs.readFileSync(fileOf(project, file), 'utf8'))
 
+    /**
+     * A project's topic notes: how the user wants work divided into topics. The agent adds a line after each merge of
+     * topics it split, or a split the user rejected, and reads them before it makes topics; the user edits the file as
+     * they like.
+     */
+    const topicNotesOf = project => path.join(root, TOPIC_NOTES_DIR, `${project}.md`)
+    const readTopicNotes = project => {
+        try {
+            return fs.readFileSync(topicNotesOf(project), 'utf8').trim()
+        } catch {
+            return ''
+        }
+    }
+    function addTopicNotes(project, lines) {
+        if (!lines.length) return
+        const file = topicNotesOf(project)
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        const head = fs.existsSync(file) ? '' : `# Topic notes: ${project}\n\nHow the user wants work divided into topics. The agent adds a line after each merge of topics it split, or a split the user rejected, and reads them before it makes topics. Edit them as you like.\n\n`
+        fs.appendFileSync(file, head + lines.map(l => `- ${today()}: ${l}\n`).join(''))
+    }
+    /** What the agent is told of the project's topic notes, with where they are. */
+    const topicNotesText = project => {
+        const notes = readTopicNotes(project)
+        return notes
+            ? `Topic notes of the project "${project}" (${topicNotesOf(project)}): read them before you make topics or split one.\n${notes}`
+            : `The project "${project}" has no topic notes yet (${topicNotesOf(project)}): after the user merges topics you split, or rejects a split, add one with a note operation.`
+    }
+
     function writeModel(project, file, model) {
         // An outline has one writer, and in file mode it is the agent: writing the model would reformat the agent's file.
         if (model.headers.mode !== 'server') throw new Error(`${project}/${file} is in file mode: the server does not write it`)
@@ -240,7 +271,9 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         for (const e of by('stage')) lines.push(`- turned ${STAGE_NAME[e.stage]} ${e.on ? 'on' : 'off'} for ${e.num} ${e.title}${e.on ? '' : ': it keeps its nodes, folded away, and asks nothing; adapt the topic to it'}`)
         for (const e of by('reopened-stage')) lines.push(`- reopened ${e.num} ${e.title}: it is active again`)
         for (const e of by('merged'))
-            lines.push(`- merged the topic "${e.from}" into ${e.num} ${e.title}: its nodes are under the stages of ${e.num} now, with their links. Numbers changed: ${e.renumbered.join('; ')}`)
+            lines.push(
+                `- merged the topic "${e.from}" into ${e.num} ${e.title}: its nodes are under the stages of ${e.num} now, with their links. Numbers changed: ${e.renumbered.join('; ')}. If you had split it off, add a line to the topic notes (a note operation) on what this says about how the user divides work.`,
+            )
         for (const e of by('ripple')) lines.push(`- so ${e.title} changed, and what comes from it needs review: ${e.marks.join('; ')}`)
         return `On the page, since you were last told, the user:\n${lines.join('\n')}\nThe outline already shows this; do not record it again.`
     }
@@ -390,6 +423,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                           ? `Attached to this session's outline, which is not named yet. It is filed under the project "${found.project}".\nPage: ${urlOf(found)}\n${UNNAMED_NEXT}`
                           : `Reattached to the outline "${model.headers.title || found.file}", filed under the project "${found.project}". Its name is the user's to change: keep it.\nPage: ${urlOf(found)}`,
                     workflowText(model.headers.workflow),
+                    topicNotesText(found.project),
                     map ? `Map:\n${map}` : ledger.untitled ? '' : 'It has no nodes yet: add them with change.',
                     queueSection(model),
                     events,
@@ -407,6 +441,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
                     ? `Opened the outline "${name}".\nPage: ${urlOf(created)}\n${where}\nIt is empty: build it from the conversation so far with one change, then give the user the page link.`
                     : `Opened an outline that is not named yet.\nPage: ${urlOf(created)}\n${where}\n${UNNAMED_NEXT}`,
                 workflowText(asked || DEFAULT_WORKFLOW),
+                topicNotesText(created.project),
             ),
         }
     }
@@ -498,6 +533,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
         ledger.changedAt = changedAt
         writeLedger(at.project, at.file, ledger)
         writeModel(at.project, at.file, model)
+        addTopicNotes(at.project, result.topicNotes)
         // The action log: first what became of the numbers, then what the user decided in chat, by the numbers the
         // nodes have now.
         actionLog.renumber(at.project, at.file, result)
@@ -548,6 +584,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             text: sections(
                 `Applied ${count} operation${count === 1 ? '' : 's'}.`,
                 notes.length ? notes.map(n => `Note: ${n}`).join('\n') : '',
+                result.topicNotes.length ? `Added to the topic notes of "${at.project}" (${topicNotesOf(at.project)}): ${result.topicNotes.join(' ')}` : '',
                 renumbered.length ? `Numbers changed (use the new ones in chat, and update any node text that names the old ones): ${renumbered.join('; ')}` : '',
                 marked.length ? `This change reached what comes from it, marked as needing review, upstream first:\n${marked.join('\n')}\nChange each one that no longer holds (that clears its mark), and send holds { num } for each that still does.` : '',
                 events,
@@ -616,6 +653,7 @@ export function createAgentApi({ root, config, linkBase, onWrite = () => {}, onM
             text: sections(
                 `This conversation is mirrored into the outline "${model.headers.title || at.file}" (${urlOf(at)}) with the outline tools: keep doing so after each answer, with one change call. Your picture of it did not survive: this is its map. Read a node before you update it.`,
                 model.headers.workflow ? workflowText(model.headers.workflow) : '',
+                topicNotesText(at.project),
                 map ? `Map:\n${map}` : 'It has no nodes yet.',
                 queueSection(model),
                 events,

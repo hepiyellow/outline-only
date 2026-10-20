@@ -214,7 +214,7 @@ describe('ten levels', () => {
 describe('topics and stages', () => {
     const stagesOn = model => lifecycleOf(model).stages
 
-    test('the first second stage writes the outline’s one topic: its nodes move under 1.1 and are renumbered once, links kept', () => {
+    test('a second stage writes the outline’s one topic: its nodes move under 1.1 and are renumbered once, links kept', () => {
         const model = outline(PLAIN)
         change(model, [{ op: 'add', num: '2.3', title: 'Warm the cache', links: ['1.1'] }])
         const result = change(model, [{ op: 'stages', on: ['plan'] }])

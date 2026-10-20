@@ -401,4 +401,21 @@ describe('the lifecycle on the page', () => {
         await until(async () => (await page.locator('.lc-topic').count()) === 0, { what: 'the page to show one topic' })
         assert.ok(await node('1.3.4').isVisible())
     })
+
+    test('when an outline gets its topics, the nodes the viewer read are not changes: they only moved, and the structure shows as it is', async () => {
+        await show('gets-topics', `# 1. Goals\n\nFast answers.\n\n# 2. Plan\n\n## 2.1 Cache in Redis\n`)
+        await until(async () => {
+            const state = await (await fetch(`${server.url}/api/state/demo/gets-topics`, { headers: { origin: server.url } })).json()
+            return Object.keys(state.read).length === 3
+        }, { what: 'the nodes to be read' })
+        // What the server writes when the agent turns Plan on.
+        fs.writeFileSync(
+            path.join(server.dir, 'demo', 'gets-topics.md'),
+            HEAD + `# 1. @topic @stages:discussion,plan @id:topica Lifecycle\n\n## 1.1 @stage:discussion Discussion\n\n### 1.1.1 Goals\n\nFast answers.\n\n### 1.1.2 Plan\n\n#### 1.1.2.1 Cache in Redis\n\n## 1.2 @stage:plan Plan\n\n### 1.2.1 @plan-item Size the cluster\n`,
+        )
+        await until(() => page.locator('.lc-stage').count().then(n => n === 2), { what: 'the stages to show' })
+        // Only the node that is new waits, as a change to open.
+        await until(() => page.locator('.outline-tab [data-change]').evaluateAll(els => els.map(el => `${el.closest('[data-num]')?.dataset.num} ${el.dataset.change}`).join('|') === '1.2.1 added'), { what: 'only 1.2.1 to wait' })
+        assert.match(await node('1.1.1').locator('.node-title').textContent(), /Goals/)
+    })
 })

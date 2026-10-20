@@ -973,11 +973,11 @@ const depthOf = node => 1 + Math.max(0, ...node.children.map(depthOf))
  * Returns what the result reports: the node last touched, notes, the numbers that changed, the messages to post, what
  * was taken out (`taken`: each removed node with where it stood), what the user decided in chat (`decisions`:
  * approval log entries, each with its `node`, whose number may change yet), and the nodes a ripple marked as needing
- * review (`marked`, upstream first).
+ * review (`marked`, upstream first), and the lines to add to the project's topic notes (`topicNotes`).
  */
 export function applyOperations(model, ops, shown = {}) {
     if (!Array.isArray(ops) || !ops.length) throw new OpError('A change needs a list of operations.', 'Pass ops: [{ op: "add", … }, …].')
-    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [], marked: [] }
+    const result = { touched: '', touchedAll: [], notes: [], renumbered: new Map(), messages: [], removed: [], taken: [], decisions: [], ordered: [], marked: [], topicNotes: [] }
     /** A ripple from nodes that changed: what comes from them needs review. The result lists the marks, upstream first. */
     const rippleFrom = nodes => {
         for (const n of ripple(model, nodes)) if (!result.marked.includes(n)) result.marked.push(n)
@@ -1599,6 +1599,15 @@ export function applyOperations(model, ops, shown = {}) {
         // The agent took in the user's ticks and nothing in the outline follows from them: any change says so (agent.js),
         // and this operation makes a change that holds nothing else.
         acknowledge() {},
+
+        // A line for the project's topic notes: what the user's merge, or their rejection of a split, says about how
+        // they want work divided into topics. The server appends it (agent.js).
+        note(op) {
+            if (!isText(op.text) || !op.text.trim()) throw new OpError('A note needs its text.', 'One sentence on how the user wants work divided into topics.')
+            if (/\n/.test(op.text.trim())) throw new OpError('A topic note is one line.', 'Say it in one sentence.')
+            if (op.text.length > 500) throw new OpError('A topic note is one sentence; this one is longer than 500 characters.')
+            result.topicNotes.push(op.text.trim())
+        },
 
         message(op) {
             if (!isText(op.text) || !op.text.trim()) throw new OpError('A message needs its text.')

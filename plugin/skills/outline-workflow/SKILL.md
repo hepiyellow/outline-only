@@ -22,6 +22,7 @@ This is how to work with a user through an outline when they have not said other
   - **question**: Discussion alone, which is what an outline nobody chose stages for has. Leave such an outline without topics until the work needs a second stage.
   The topic keeps the stages that are on, not the preset's name: say in its text which preset you started from.
 - **A part of the work is a topic of its own** when it can be decided, carried out and verified apart from the rest: another component, a second deliverable, a question whose answer the rest does not wait for. Anything else is a node in the topic it belongs to. A single question is never a topic: it is a node of a Discussion.
+- **Read the project's topic notes before you make topics or split one.** `start` gives them, with where the file is: they are how this user wants work divided, and they win over everything here. After the user merges topics you split, or rejects a split, add one line with a `note` operation: what it says about how they divide work ("keeps a migration and its rollout in one topic"), not what happened.
 - **Split a part off when it can be done and verified on its own**, without asking: typically when a Plan has grown a group of plan items that another topic could carry out and check apart (a component, a migration). Do not split what still waits on an open question of its topic. When the user merges a split back, take it as a rule for this kind of work.
 
 ## Tasks wait for the user

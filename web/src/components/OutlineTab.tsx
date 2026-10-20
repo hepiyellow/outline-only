@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { api, outlineApiPath } from '@/lib/api'
 import { UNTITLED, allNodes, currentPath, linksByNum } from '@/lib/outline'
 import { KIND_COLUMNS, SHOW_TITLE_CHECKBOX, Statuses, kindColumnsInView, marksChanged, type KindKey, type MarksChange } from '@/lib/status'
 import { markStuck } from '@/lib/sticky'
 import { topicTraceOf, traceOf } from '@/lib/trace'
 import { cn } from '@/lib/utils'
-import type { Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
-import { api, outlineApiPath } from '@/lib/api'
+import type { Lifecycle, Outline, OutlineNode, StageInfo, StageName, StatePatch, TopicLayout, ViewerState } from '@/types'
 import { LifecycleView, hasTopics, lifecycleStartsOpen } from './Lifecycle'
 import { NodeHistory } from './NodeHistory'
 import { Overview } from './Overview'
@@ -27,6 +27,9 @@ export const isOpenIn =
     (open: OpenNodes, statuses: Statuses, stages: Record<string, StageInfo> = {}) =>
     (node: OutlineNode) =>
         node.num in open ? open[node.num] : (lifecycleStartsOpen(node, stages) ?? statuses.startsOpen(node))
+
+/** The lifecycle of an outline without topics: no topics, no stages, no marks. */
+const NO_LIFECYCLE: Lifecycle = { topics: {}, stages: {}, nodes: {} }
 
 /** Whether a node has nothing left to show: a parent that is settled, or a task the agent carried out and did not fail. */
 const finished = (node: OutlineNode, statuses: Statuses) => (node.children.length ? statuses.isSettled(node) : statuses.ran(node) && !node.tags.includes('failed'))
@@ -97,7 +100,8 @@ export function OutlineTab({ outline, shown, viewer, actions, onToggle, onViewer
     // The kind marks that changed as a change was accepted.
     const [pulse, setPulse] = useState<Map<string, MarksChange>>(new Map())
     const notify = useNotify()
-    const lifecycle = outline.lifecycle ?? { topics: {}, stages: {} }
+    // A server from before topics sends none.
+    const lifecycle = outline.lifecycle ?? NO_LIFECYCLE
     const act = useMemo(() => {
         const post = (body: unknown) => api(`/api/outline/${outlineApiPath(outline.project, outline.file)}/act`, body).catch((e: Error) => notify(e.message, true))
         return {
